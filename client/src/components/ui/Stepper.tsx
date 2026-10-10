@@ -1,59 +1,47 @@
 import React from 'react';
 import { Check } from 'lucide-react';
 
-interface Step {
-  id: number;
-  name: string;
-}
-
 interface StepperProps {
-  steps: Step[];
+  steps: string[];
+  /** 1-based index of the active step. */
   currentStep: number;
 }
 
-export const Stepper: React.FC<StepperProps> = ({ steps, currentStep }) => {
-  return (
-    <div className="w-full py-4">
-      <div className="flex items-center justify-between relative max-w-2xl mx-auto">
-        {/* Background Connecting Line */}
-        <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-gray-200 -translate-y-1/2 z-0" />
-        
-        {/* Progress Fill Line */}
-        <div
-          className="absolute top-1/2 left-0 h-0.5 bg-indigo-600 -translate-y-1/2 z-0 transition-all duration-300"
-          style={{
-            width: `${((currentStep - 1) / (steps.length - 1)) * 100}%`,
-          }}
-        />
-
-        {steps.map((step) => {
-          const isCompleted = step.id < currentStep;
-          const isCurrent = step.id === currentStep;
-
-          return (
-            <div key={step.id} className="relative z-10 flex flex-col items-center group">
-              <div
-                className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm transition-all duration-200 border-2 ${
-                  isCompleted
-                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-100'
-                    : isCurrent
-                    ? 'bg-white border-indigo-600 text-indigo-600 shadow-lg ring-4 ring-indigo-50'
-                    : 'bg-white border-gray-300 text-gray-400'
-                }`}
-              >
-                {isCompleted ? <Check className="w-5 h-5 stroke-[2.5]" /> : step.id}
-              </div>
+export const Stepper: React.FC<StepperProps> = ({ steps, currentStep }) => (
+  <nav aria-label="Application progress">
+    <ol className="flex items-center">
+      {steps.map((name, i) => {
+        const index = i + 1;
+        const isDone = index < currentStep;
+        const isCurrent = index === currentStep;
+        return (
+          <li key={name} className={`flex items-center ${i < steps.length - 1 ? 'flex-1' : ''}`} aria-current={isCurrent ? 'step' : undefined}>
+            <div className="flex items-center gap-2">
               <span
-                className={`mt-2 text-xs font-semibold tracking-wide transition-colors ${
-                  isCurrent ? 'text-indigo-600' : isCompleted ? 'text-gray-900' : 'text-gray-400'
+                className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
+                  isDone
+                    ? 'bg-brand-600 text-white'
+                    : isCurrent
+                      ? 'border-2 border-brand-600 bg-white text-brand-700'
+                      : 'border-2 border-slate-200 bg-white text-slate-400'
                 }`}
               >
-                {step.name}
+                {isDone ? <Check className="h-4 w-4" aria-hidden="true" /> : index}
               </span>
+              <span className={`hidden text-sm font-medium sm:inline ${isCurrent ? 'text-slate-900' : isDone ? 'text-slate-700' : 'text-slate-400'}`}>
+                {name}
+              </span>
+              <span className="sr-only">{isDone ? '(completed)' : isCurrent ? '(current step)' : ''}</span>
             </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
+            {i < steps.length - 1 && (
+              <span aria-hidden="true" className={`mx-3 h-0.5 flex-1 rounded ${isDone ? 'bg-brand-600' : 'bg-slate-200'}`} />
+            )}
+          </li>
+        );
+      })}
+    </ol>
+    <p className="mt-2 text-sm text-slate-500 sm:hidden">
+      Step {currentStep} of {steps.length}: <span className="font-medium text-slate-700">{steps[currentStep - 1]}</span>
+    </p>
+  </nav>
+);

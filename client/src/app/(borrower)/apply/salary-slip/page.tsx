@@ -1,66 +1,48 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { SalarySlipUploader } from '../../../../components/borrower/SalarySlipUploader';
 import { Button } from '../../../../components/ui/Button';
-import { api } from '../../../../lib/api';
-import { toast } from 'sonner';
-import { ArrowLeft } from 'lucide-react';
-import { Loan, SalarySlip } from '../../../../types';
+import { Alert } from '../../../../components/ui/Alert';
+import { Skeleton } from '../../../../components/ui/Skeleton';
+import { useDraft } from '../../../../hooks/useDraft';
 
 export default function SalarySlipStepPage() {
   const router = useRouter();
-  const [loanId, setLoanId] = useState<string | null>(null);
-  const [existingSlip, setExistingSlip] = useState<SalarySlip | undefined>(undefined);
-  const [hasSlipUploaded, setHasSlipUploaded] = useState(false);
+  const { data, error, ready, reload } = useDraft('salary-slip');
 
-  useEffect(() => {
-    api.get('/borrower/loans/draft').then((res) => {
-      if (res.data.success && res.data.data.draftLoan) {
-        const draft = res.data.data.draftLoan;
-        setLoanId(draft._id);
-        if (draft.salarySlip && draft.salarySlip.storedName) {
-          setExistingSlip(draft.salarySlip);
-          setHasSlipUploaded(true);
-        }
-      } else {
-        toast.error('Please complete personal details first');
-        router.push('/apply/personal-details');
-      }
-    }).catch(() => {
-      router.push('/apply/personal-details');
-    });
-  }, [router]);
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!ready || !data?.draftLoan) return <Skeleton className="h-48 w-full" />;
 
-  const handleUploadSuccess = (updatedLoan: Loan) => {
-    setExistingSlip(updatedLoan.salarySlip);
-    setHasSlipUploaded(true);
-    router.push('/apply/loan-config');
-  };
-
-  if (!loanId) {
-    return <div className="p-8 text-center text-sm text-gray-500">Loading loan context...</div>;
-  }
+  const loan = data.draftLoan;
 
   return (
     <div className="space-y-6">
-      <div className="border-b border-gray-100 pb-4">
-        <h2 className="text-lg font-bold text-gray-900">Step 2: Upload Salary Slip</h2>
-        <p className="text-xs text-gray-500">
-          Upload your latest salary slip (PDF or high-resolution image) for income verification.
-        </p>
+      <div>
+        <h2 className="text-lg font-semibold text-slate-900">Salary slip</h2>
+        <p className="text-sm text-slate-500">Upload your most recent salary slip so our team can verify your income.</p>
       </div>
 
-      <SalarySlipUploader loanId={loanId} existingSlip={existingSlip} onSuccess={handleUploadSuccess} />
+      <SalarySlipUploader
+        loanId={loan._id}
+        existingSlip={loan.salarySlip}
+        onUploaded={() => {
+          toast.success('Salary slip uploaded');
+          reload();
+          router.push('/apply/loan-config');
+        }}
+      />
 
-      <div className="flex justify-between items-center pt-4 border-t border-gray-100">
+      <div className="flex flex-col-reverse gap-2 border-t border-slate-200 pt-5 sm:flex-row sm:justify-between">
         <Button variant="outline" onClick={() => router.push('/apply/personal-details')}>
-          <ArrowLeft className="w-4 h-4 mr-1.5" /> Back
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back
         </Button>
-        {hasSlipUploaded && (
-          <Button variant="primary" onClick={() => router.push('/apply/loan-config')}>
-            Continue to Loan Setup
+        {loan.salarySlip && (
+          <Button onClick={() => router.push('/apply/loan-config')}>
+            Continue <ArrowRight className="h-4 w-4" aria-hidden="true" />
           </Button>
         )}
       </div>

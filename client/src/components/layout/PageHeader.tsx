@@ -6,14 +6,12 @@ interface PageHeaderProps {
   action?: React.ReactNode;
 }
 
-export const PageHeader: React.FC<PageHeaderProps> = ({ title, description, action }) => {
-  return (
-    <div className="flex flex-col md:flex-row md:items-center justify-between pb-6 mb-6 border-b border-gray-100 gap-4">
-      <div>
-        <h1 className="text-2xl font-black text-gray-900 tracking-tight">{title}</h1>
-        {description && <p className="text-sm text-gray-500 mt-1">{description}</p>}
-      </div>
-      {action && <div>{action}</div>}
+export const PageHeader: React.FC<PageHeaderProps> = ({ title, description, action }) => (
+  <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div>
+      <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
+      {description && <p className="mt-1 max-w-2xl text-sm text-slate-500">{description}</p>}
     </div>
-  );
-};
+    {action && <div className="flex-shrink-0">{action}</div>}
+  </div>
+);

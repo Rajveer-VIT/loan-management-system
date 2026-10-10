@@ -1,43 +1,115 @@
-import React, { useEffect } from 'react';
+'use client';
+
+import React, { useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 
 interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   title: string;
+  description?: string;
+  size?: 'md' | 'lg' | 'xl';
+  /** Prevents closing via Escape/backdrop while an action is in flight. */
+  preventClose?: boolean;
   children: React.ReactNode;
 }
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }) => {
+const SIZES = { md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' };
+
+const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input:not([disabled]), select, [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Accessible dialog: role="dialog" + aria-modal, labelled by its title, moves focus
+ * inside on open, keeps Tab within the dialog, closes on Escape, and returns focus
+ * to the element that opened it.
+ */
+export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, description, size = 'md', preventClose = false, children }) => {
+  const titleId = useId();
+  const descId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const preventCloseRef = useRef(preventClose);
+  preventCloseRef.current = preventClose;
+
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+    if (!isOpen) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    const first = panel?.querySelector<HTMLElement>(`[data-autofocus], ${FOCUSABLE}`);
+    (first ?? panel)?.focus();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !preventCloseRef.current) {
+        e.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key === 'Tab' && panel) {
+        const nodes = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+        if (nodes.length === 0) return;
+        const firstNode = nodes[0];
+        const lastNode = nodes[nodes.length - 1];
+        if (e.shiftKey && document.activeElement === firstNode) {
+          e.preventDefault();
+          lastNode.focus();
+        } else if (!e.shiftKey && document.activeElement === lastNode) {
+          e.preventDefault();
+          firstNode.focus();
+        }
+      }
     };
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-      window.addEventListener('keydown', handleKeyDown);
-    }
+
+    const { overflow } = document.body.style;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', onKeyDown);
     return () => {
-      document.body.style.overflow = 'unset';
-      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = overflow;
+      document.removeEventListener('keydown', onKeyDown);
+      previouslyFocused?.focus?.();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 transform transition-all duration-200 scale-100">
-        <div className="flex items-center justify-between border-b border-gray-100 pb-4 mb-4">
-          <h3 className="text-lg font-bold text-gray-900">{title}</h3>
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
+      <div
+        className="absolute inset-0 bg-slate-900/50"
+        aria-hidden="true"
+        onClick={() => !preventClose && onClose()}
+      />
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descId : undefined}
+        tabIndex={-1}
+        className={`relative flex max-h-[92vh] w-full ${SIZES[size]} flex-col rounded-t-2xl bg-white shadow-xl focus:outline-none sm:rounded-2xl`}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:px-6">
+          <div>
+            <h2 id={titleId} className="text-base font-semibold text-slate-900">
+              {title}
+            </h2>
+            {description && (
+              <p id={descId} className="mt-0.5 text-sm text-slate-500">
+                {description}
+              </p>
+            )}
+          </div>
           <button
+            type="button"
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors"
+            disabled={preventClose}
+            aria-label="Close dialog"
+            className="-mr-1 rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-40"
           >
-            <X className="w-5 h-5" />
+            <X className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>
-        <div>{children}</div>
+        <div className="overflow-y-auto px-5 py-5 sm:px-6">{children}</div>
       </div>
     </div>
   );

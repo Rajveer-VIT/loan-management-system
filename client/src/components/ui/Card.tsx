@@ -1,16 +1,11 @@
 import React from 'react';
 
-interface CardProps {
-  children: React.ReactNode;
-  className?: string;
+interface CardProps extends React.HTMLAttributes<HTMLElement> {
+  as?: 'div' | 'section' | 'article';
 }
 
-export const Card: React.FC<CardProps> = ({ children, className = '' }) => {
-  return (
-    <div
-      className={`bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow duration-200 p-6 ${className}`}
-    >
-      {children}
-    </div>
-  );
-};
+export const Card: React.FC<CardProps> = ({ as: Tag = 'div', className = '', children, ...props }) => (
+  <Tag className={`rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6 ${className}`} {...props}>
+    {children}
+  </Tag>
+);

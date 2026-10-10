@@ -1,216 +1,178 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
-import { Navbar } from '@/components/layout/Navbar';
-import { Footer } from '@/components/layout/Footer';
-import { PageHeader } from '@/components/layout/PageHeader';
-import { Card } from '@/components/ui/Card';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
-import { EmptyState } from '@/components/ui/EmptyState';
-import { Skeleton } from '@/components/ui/Skeleton';
-import { Loan, LOAN_STATUS } from '@/types';
-import { formatCurrency, formatDate } from '@/lib/format';
-import { api } from '@/lib/api';
-import { CheckCircle2, Clock, AlertTriangle, ArrowRight } from 'lucide-react';
+import { ArrowRight, Check, ChevronDown, Plus } from 'lucide-react';
+import { PageHeader } from '../../../components/layout/PageHeader';
+import { Card } from '../../../components/ui/Card';
+import { StatusBadge } from '../../../components/ui/Badge';
+import { Button } from '../../../components/ui/Button';
+import { EmptyState } from '../../../components/ui/EmptyState';
+import { Skeleton } from '../../../components/ui/Skeleton';
+import { Alert } from '../../../components/ui/Alert';
+import { PaymentHistory } from '../../../components/dashboard/PaymentHistory';
+import { useApiData } from '../../../hooks/useApi';
+import { formatCurrency, formatDate, shortId } from '../../../lib/format';
+import { Loan, LOAN_STATUS, Payment } from '../../../types';
 
-export default function MyLoansPage() {
-  const [loans, setLoans] = useState<Loan[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+const OPEN_STATUSES = [LOAN_STATUS.APPLIED, LOAN_STATUS.SANCTIONED, LOAN_STATUS.DISBURSED];
 
-  useEffect(() => {
-    api
-      .get('/borrower/loans')
-      .then((res: any) => {
-        if (res.data.success) {
-          setLoans(res.data.data);
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        setIsLoading(false);
-      });
-  }, []);
+const MILESTONES: Array<{ status: LOAN_STATUS; label: string; dateOf: (l: Loan) => string | undefined }> = [
+  { status: LOAN_STATUS.APPLIED, label: 'Applied', dateOf: (l) => l.appliedAt },
+  { status: LOAN_STATUS.SANCTIONED, label: 'Sanctioned', dateOf: (l) => l.sanctionedAt },
+  { status: LOAN_STATUS.DISBURSED, label: 'Disbursed', dateOf: (l) => l.disbursedAt },
+  { status: LOAN_STATUS.CLOSED, label: 'Closed', dateOf: (l) => l.closedAt },
+];
 
-  const getTimelineStep = (status: LOAN_STATUS) => {
-    switch (status) {
-      case LOAN_STATUS.DRAFT:
-        return 0;
-      case LOAN_STATUS.APPLIED:
-        return 1;
-      case LOAN_STATUS.SANCTIONED:
-        return 2;
-      case LOAN_STATUS.DISBURSED:
-        return 3;
-      case LOAN_STATUS.CLOSED:
-        return 4;
-      case LOAN_STATUS.REJECTED:
-        return -1;
-      default:
-        return 0;
-    }
-  };
+const Timeline: React.FC<{ loan: Loan }> = ({ loan }) => {
+  const reachedIndex = MILESTONES.findIndex((m) => m.status === loan.status);
+  return (
+    <ol className="grid grid-cols-4 gap-2" aria-label="Loan progress">
+      {MILESTONES.map((m, i) => {
+        const done = i <= reachedIndex;
+        return (
+          <li key={m.status} className="text-center">
+            <div className={`mx-auto flex h-7 w-7 items-center justify-center rounded-full ${done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-400'}`}>
+              {done ? <Check className="h-4 w-4" aria-hidden="true" /> : <span className="text-xs font-semibold">{i + 1}</span>}
+            </div>
+            <p className={`mt-1.5 text-xs font-medium ${done ? 'text-slate-900' : 'text-slate-400'}`}>
+              {m.label}
+              <span className="sr-only">{done ? ' (done)' : ' (pending)'}</span>
+            </p>
+            <p className="text-[11px] text-slate-500">{done ? formatDate(m.dateOf(loan)) : ''}</p>
+          </li>
+        );
+      })}
+    </ol>
+  );
+};
+
+const LoanPayments: React.FC<{ loanId: string }> = ({ loanId }) => {
+  const { data, error, isLoading } = useApiData<{ loan: Loan; payments: Payment[] }>(`/borrower/loans/${loanId}`);
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (isLoading || !data) return <Skeleton className="h-20 w-full" />;
+  return <PaymentHistory payments={data.payments} showRecordedBy={false} />;
+};
+
+const LoanCard: React.FC<{ loan: Loan }> = ({ loan }) => {
+  const [showPayments, setShowPayments] = useState(false);
+  const isRepaying = loan.status === LOAN_STATUS.DISBURSED || loan.status === LOAN_STATUS.CLOSED;
+  const pct = loan.totalRepayment > 0 ? Math.min(100, (loan.totalPaid / loan.totalRepayment) * 100) : 0;
+
+  if (loan.status === LOAN_STATUS.DRAFT) {
+    return (
+      <Card className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <StatusBadge status={loan.status} />
+            <span className="text-xs text-slate-500">Started {formatDate(loan.createdAt)}</span>
+          </div>
+          <p className="mt-2 text-sm text-slate-600">Your application isn&apos;t submitted yet. Pick up where you left off.</p>
+        </div>
+        <Link href="/apply/personal-details">
+          <Button size="sm">
+            Continue application <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </Link>
+      </Card>
+    );
+  }
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50">
-      <Navbar />
+    <Card as="article" aria-label={`Loan ${shortId(loan._id)}`} className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <StatusBadge status={loan.status} />
+            <span className="text-xs text-slate-500">Loan {shortId(loan._id)}</span>
+          </div>
+          <p className="mt-2 text-2xl font-semibold tabular-nums text-slate-900">{formatCurrency(loan.amount)}</p>
+          <p className="text-sm text-slate-500">
+            {loan.tenureDays} days at {loan.interestRate}% p.a. · interest {formatCurrency(loan.simpleInterest)}
+          </p>
+        </div>
+        <div className="sm:text-right">
+          <p className="text-xs text-slate-500">Total repayment</p>
+          <p className="text-lg font-semibold tabular-nums text-slate-900">{formatCurrency(loan.totalRepayment)}</p>
+        </div>
+      </div>
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        <PageHeader
-          title="My Loan Applications & Repayment Portal"
-          description="Track status timeline, view calculation details, and monitor repayment progress."
+      {loan.status === LOAN_STATUS.REJECTED ? (
+        <Alert tone="danger" title={`Application rejected on ${formatDate(loan.rejectedAt)}`}>
+          {loan.rejectionReason}
+        </Alert>
+      ) : (
+        <Timeline loan={loan} />
+      )}
+
+      {isRepaying && (
+        <div className="space-y-2 rounded-lg bg-slate-50 p-4">
+          <div className="flex flex-wrap justify-between gap-2 text-sm">
+            <span className="text-slate-600">
+              Paid <strong className="tabular-nums text-slate-900">{formatCurrency(loan.totalPaid)}</strong>
+            </span>
+            <span className="text-slate-600">
+              Outstanding <strong className="tabular-nums text-slate-900">{formatCurrency(loan.outstandingBalance)}</strong>
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-label="Repaid" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+            <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
+          </div>
+          <button
+            type="button"
+            aria-expanded={showPayments}
+            onClick={() => setShowPayments((v) => !v)}
+            className="inline-flex items-center gap-1 text-sm font-medium text-brand-700 hover:underline"
+          >
+            {showPayments ? 'Hide payments' : 'Show payments'}
+            <ChevronDown className={`h-4 w-4 transition-transform ${showPayments ? 'rotate-180' : ''}`} aria-hidden="true" />
+          </button>
+          {showPayments && <LoanPayments loanId={loan._id} />}
+        </div>
+      )}
+    </Card>
+  );
+};
+
+export default function MyLoansPage() {
+  const { data: loans, error, isLoading } = useApiData<Loan[]>('/borrower/loans');
+  const hasOpenOrDraft = loans?.some((l) => l.status === LOAN_STATUS.DRAFT || OPEN_STATUSES.includes(l.status)) ?? true;
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="My loans"
+        description="Track your applications and repayments."
+        action={
+          !hasOpenOrDraft && (
+            <Link href="/apply/personal-details">
+              <Button>
+                <Plus className="h-4 w-4" aria-hidden="true" /> New application
+              </Button>
+            </Link>
+          )
+        }
+      />
+
+      {error && <Alert tone="danger">{error}</Alert>}
+      {isLoading && !loans ? (
+        <div className="space-y-4">
+          <Skeleton className="h-44 w-full" />
+          <Skeleton className="h-44 w-full" />
+        </div>
+      ) : loans && loans.length === 0 ? (
+        <EmptyState
+          title="No applications yet"
+          description="Apply for a personal loan of ₹50,000 to ₹5,00,000 in three short steps."
           action={
             <Link href="/apply/personal-details">
-              <Button variant="primary" size="sm">
-                + New Application
-              </Button>
+              <Button>Start application</Button>
             </Link>
           }
         />
-
-        {isLoading ? (
-          <div className="space-y-4">
-            {[1, 2].map((i) => (
-              <Skeleton key={i} className="h-48 w-full" />
-            ))}
-          </div>
-        ) : loans.length === 0 ? (
-          <EmptyState
-            title="No loan applications found"
-            description="You have not submitted any loan applications yet. Apply now to get instant eligibility approval."
-            action={
-              <Link href="/apply/personal-details">
-                <Button variant="primary">Apply for a Loan</Button>
-              </Link>
-            }
-          />
-        ) : (
-          <div className="space-y-6">
-            {loans.map((loan) => {
-              const currentStep = getTimelineStep(loan.status);
-              const repaymentPercent =
-                loan.totalRepayment > 0
-                  ? Math.min(100, Math.round((loan.totalPaid / loan.totalRepayment) * 100))
-                  : 0;
-
-              return (
-                <Card key={loan._id} className="space-y-6">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-100 gap-2">
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs font-semibold text-gray-400">
-                          ID: {loan._id.slice(-8).toUpperCase()}
-                        </span>
-                        <Badge status={loan.status} />
-                      </div>
-                      <h3 className="text-xl font-black text-gray-900 mt-1">
-                        {formatCurrency(loan.amount)}
-                        <span className="text-xs font-normal text-gray-500 ml-2">
-                          for {loan.tenureDays} Days @ 12% p.a.
-                        </span>
-                      </h3>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs text-gray-400">Applied On</p>
-                      <p className="text-sm font-semibold text-gray-700">{formatDate(loan.createdAt)}</p>
-                    </div>
-                  </div>
-
-                  {/* Status Timeline Progress Bar */}
-                  {loan.status !== LOAN_STATUS.REJECTED ? (
-                    <div className="py-2">
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-                        Status Timeline
-                      </p>
-                      <div className="grid grid-cols-4 gap-2 text-center relative">
-                        {[
-                          { title: 'Applied', step: 1 },
-                          { title: 'Sanctioned', step: 2 },
-                          { title: 'Disbursed', step: 3 },
-                          { title: 'Closed', step: 4 },
-                        ].map((s) => {
-                          const isDone = currentStep >= s.step;
-                          const isCurrent = currentStep === s.step;
-
-                          return (
-                            <div
-                              key={s.step}
-                              className={`p-3 rounded-xl border text-xs font-bold transition-all ${
-                                isDone
-                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                                  : isCurrent
-                                  ? 'bg-indigo-50 border-indigo-200 text-indigo-800 ring-2 ring-indigo-100'
-                                  : 'bg-gray-50 border-gray-100 text-gray-400'
-                              }`}
-                            >
-                              <div className="flex justify-center mb-1">
-                                {isDone ? (
-                                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                                ) : (
-                                  <Clock className="w-4 h-4 text-gray-400" />
-                                )}
-                              </div>
-                              {s.title}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-rose-800 space-y-1">
-                      <div className="flex items-center space-x-2 font-bold text-xs">
-                        <AlertTriangle className="w-4 h-4 text-rose-600" />
-                        <span>Application Rejected by Underwriting</span>
-                      </div>
-                      <p className="text-xs text-rose-700 font-medium">
-                        Reason: {loan.rejectionReason || 'Did not meet credit policy criteria'}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Repayment Progress (For Disbursed or Closed Loans) */}
-                  {(loan.status === LOAN_STATUS.DISBURSED || loan.status === LOAN_STATUS.CLOSED) && (
-                    <div className="bg-gray-50 p-4 rounded-xl space-y-2 border border-gray-100">
-                      <div className="flex justify-between text-xs font-bold text-gray-700">
-                        <span>Repayment Progress ({repaymentPercent}%)</span>
-                        <span>
-                          Paid {formatCurrency(loan.totalPaid)} of {formatCurrency(loan.totalRepayment)}
-                        </span>
-                      </div>
-                      <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-emerald-500 transition-all duration-300"
-                          style={{ width: `${repaymentPercent}%` }}
-                        />
-                      </div>
-                      <div className="flex justify-between text-xs text-gray-500 pt-1">
-                        <span>Outstanding Balance:</span>
-                        <span className="font-bold text-gray-900">
-                          {formatCurrency(loan.outstandingBalance)}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Complete Draft button if DRAFT */}
-                  {loan.status === LOAN_STATUS.DRAFT && (
-                    <div className="flex justify-end">
-                      <Link href="/apply/personal-details">
-                        <Button variant="primary" size="sm">
-                          Resume Application <ArrowRight className="w-4 h-4 ml-1" />
-                        </Button>
-                      </Link>
-                    </div>
-                  )}
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </main>
-
-      <Footer />
+      ) : (
+        <div className="space-y-4">{loans?.map((loan) => <LoanCard key={loan._id} loan={loan} />)}</div>
+      )}
     </div>
   );
 }

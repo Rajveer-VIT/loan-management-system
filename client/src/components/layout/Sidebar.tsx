@@ -3,94 +3,89 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { CreditCard, FileCheck2, LayoutDashboard, Receipt, Users } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { DashboardModule, modulesFor } from '../../lib/access';
 import { ROLES } from '../../types';
-import {
-  Users,
-  CheckCircle,
-  CreditCard,
-  Receipt,
-  LayoutDashboard,
-} from 'lucide-react';
 
+const ICONS: Record<DashboardModule, React.ElementType> = {
+  sales: Users,
+  sanction: FileCheck2,
+  disbursement: CreditCard,
+  collection: Receipt,
+};
+
+/** Only the modules the user's role can use are listed (the API enforces the same). */
+function useNavItems() {
+  const { user } = useAuth();
+  if (!user) return [];
+  const items = modulesFor(user.role).map((m) => ({ href: m.href, label: m.label, icon: ICONS[m.key] }));
+  if (user.role === ROLES.ADMIN) {
+    items.unshift({ href: '/dashboard', label: 'Overview', icon: LayoutDashboard });
+  }
+  return items;
+}
+
+function isActive(pathname: string, href: string) {
+  return href === '/dashboard' ? pathname === href : pathname.startsWith(href);
+}
+
+/** Vertical navigation for large screens. */
 export const Sidebar: React.FC = () => {
   const pathname = usePathname();
-  const { user } = useAuth();
-
-  if (!user) return null;
-
-  const role = user.role;
-
-  const navItems = [
-    {
-      name: 'Sales Leads',
-      href: '/dashboard/sales',
-      icon: Users,
-      allowedRoles: [ROLES.ADMIN, ROLES.SALES],
-    },
-    {
-      name: 'Underwriting & Sanction',
-      href: '/dashboard/sanction',
-      icon: CheckCircle,
-      allowedRoles: [ROLES.ADMIN, ROLES.SANCTION],
-    },
-    {
-      name: 'Loan Disbursement',
-      href: '/dashboard/disbursement',
-      icon: CreditCard,
-      allowedRoles: [ROLES.ADMIN, ROLES.DISBURSEMENT],
-    },
-    {
-      name: 'Repayment & Collection',
-      href: '/dashboard/collection',
-      icon: Receipt,
-      allowedRoles: [ROLES.ADMIN, ROLES.COLLECTION],
-    },
-  ];
-
-  const filteredItems = navItems.filter(
-    (item) => item.allowedRoles.includes(role as ROLES) || role === ROLES.ADMIN
-  );
+  const items = useNavItems();
 
   return (
-    <aside className="w-64 bg-white border-r border-gray-100 min-h-[calc(100vh-4rem)] p-4 flex flex-col justify-between">
-      <div className="space-y-6">
-        <div className="px-3 py-2 bg-indigo-50/50 rounded-xl border border-indigo-100">
-          <p className="text-xs font-semibold text-indigo-900 uppercase tracking-wider">
-            Operations Workspace
-          </p>
-          <p className="text-xs text-indigo-600 font-medium mt-0.5 capitalize">
-            Role: {role.toLowerCase()}
-          </p>
-        </div>
-
-        <nav className="space-y-1">
-          {filteredItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = pathname.startsWith(item.href);
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center space-x-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150 ${
-                  isActive
-                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100'
-                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                }`}
-              >
-                <Icon className="w-5 h-5" />
-                <span>{item.name}</span>
-              </Link>
-            );
-          })}
-        </nav>
-      </div>
-
-      <div className="p-3 bg-gray-50 rounded-xl text-xs text-gray-500 border border-gray-100">
-        <p className="font-semibold text-gray-700">LMS Security Active</p>
-        <p className="text-[11px] mt-0.5">Role-Based Access Enforcement Enabled</p>
-      </div>
+    <aside className="hidden w-60 flex-shrink-0 border-r border-slate-200 bg-white lg:block">
+      <nav aria-label="Operations modules" className="sticky top-16 space-y-1 p-4">
+        <p className="px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Operations</p>
+        {items.map(({ href, label, icon: Icon }) => {
+          const active = isActive(pathname, href);
+          return (
+            <Link
+              key={href}
+              href={href}
+              aria-current={active ? 'page' : undefined}
+              className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+                active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              <Icon className="h-4 w-4" aria-hidden="true" />
+              {label}
+            </Link>
+          );
+        })}
+      </nav>
     </aside>
+  );
+};
+
+/** Horizontal, scrollable tab bar for small screens. */
+export const MobileModuleNav: React.FC = () => {
+  const pathname = usePathname();
+  const items = useNavItems();
+  if (items.length <= 1) return null;
+
+  return (
+    <nav aria-label="Operations modules" className="border-b border-slate-200 bg-white lg:hidden">
+      <div className="flex gap-1 overflow-x-auto px-4 py-2">
+        {items.map(({ href, label, icon: Icon }) => {
+          const active = isActive(pathname, href);
+          return (
+            <Link
+              key={href}
+              href={href}
+              aria-current={active ? 'page' : undefined}
+              className={`flex flex-shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium ${
+                active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <Icon className="h-4 w-4" aria-hidden="true" />
+              {label}
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
   );
 };

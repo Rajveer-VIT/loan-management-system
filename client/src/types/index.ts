@@ -30,6 +30,14 @@ export interface User {
   createdAt: string;
 }
 
+/** A user reference as populated by the API (`name email`). */
+export interface UserSummary {
+  _id: string;
+  name: string;
+  email: string;
+  createdAt?: string;
+}
+
 export interface PersonalDetails {
   fullName: string;
   pan: string;
@@ -41,14 +49,21 @@ export interface PersonalDetails {
 export interface SalarySlip {
   originalName: string;
   storedName: string;
-  path: string;
   mimeType: string;
   size: number;
+  uploadedAt?: string;
+}
+
+export interface StatusHistoryEntry {
+  status: LOAN_STATUS;
+  at: string;
+  by?: string | UserSummary;
+  note?: string;
 }
 
 export interface Loan {
   _id: string;
-  borrower: string | User;
+  borrower: string | UserSummary;
   personalDetails?: PersonalDetails;
   salarySlip?: SalarySlip;
   amount: number;
@@ -59,10 +74,14 @@ export interface Loan {
   totalPaid: number;
   outstandingBalance: number;
   status: LOAN_STATUS;
+  statusHistory?: StatusHistoryEntry[];
+  appliedAt?: string;
   rejectionReason?: string;
-  sanctionedBy?: string | User;
+  rejectedBy?: string | UserSummary;
+  rejectedAt?: string;
+  sanctionedBy?: string | UserSummary;
   sanctionedAt?: string;
-  disbursedBy?: string | User;
+  disbursedBy?: string | UserSummary;
   disbursedAt?: string;
   closedAt?: string;
   createdAt: string;
@@ -71,33 +90,84 @@ export interface Loan {
 
 export interface Payment {
   _id: string;
-  loan: string | Loan;
+  loan: string;
   utrNumber: string;
   amount: number;
   paymentDate: string;
-  recordedBy: string | User;
+  recordedBy?: string | UserSummary;
   createdAt: string;
 }
 
-export interface ApiResponse<T = any> {
+export interface FieldError {
+  rule?: string;
+  field?: string;
+  message: string;
+}
+
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+export interface ApiResponse<T = unknown> {
   success: boolean;
   message?: string;
+  code?: string;
   data?: T;
-  errors?: Array<{ rule?: string; field?: string; message: string }>;
-  pagination?: {
-    page: number;
-    limit: number;
-    total: number;
-    totalPages: number;
-  };
+  errors?: FieldError[];
+  pagination?: Pagination;
 }
+
+export type LeadStage = 'REGISTERED' | 'PROFILE_SAVED' | 'SLIP_UPLOADED';
 
 export interface Lead {
   id: string;
   name: string;
   email: string;
   createdAt: string;
-  stage: string;
-  loanId: string | null;
-  loanAmount: number | null;
+  lastActivityAt: string;
+  stage: LeadStage;
+}
+
+export interface DraftState {
+  draftLoan: Loan | null;
+  currentStep: 'personal' | 'salary-slip' | 'loan-config';
+}
+
+export interface PaymentResult {
+  payment: Payment;
+  loan: Loan;
+  isClosed: boolean;
+}
+
+export interface SalesStats {
+  totalLeads: number;
+  newLeadsToday: number;
+  convertedBorrowers: number;
+  funnel: Record<LeadStage, number>;
+}
+
+export interface SanctionStats {
+  pendingCount: number;
+  totalPendingAmount: number;
+  sanctionedToday: number;
+  rejectedToday: number;
+}
+
+export interface DisbursementStats {
+  pendingCount: number;
+  totalPendingAmount: number;
+  disbursedTodayCount: number;
+  disbursedTodayAmount: number;
+}
+
+export interface CollectionStats {
+  activeDisbursedCount: number;
+  closedCount: number;
+  totalOutstanding: number;
+  totalCollected: number;
 }

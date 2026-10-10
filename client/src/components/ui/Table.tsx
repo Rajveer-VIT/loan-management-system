@@ -1,76 +1,74 @@
 import React from 'react';
 
-interface Column<T> {
+export interface Column<T> {
   header: string;
-  accessorKey?: keyof T;
-  cell?: (row: T) => React.ReactNode;
+  cell: (row: T) => React.ReactNode;
+  className?: string;
+  /** Hide on small screens to keep the table readable on mobile. */
+  hideOnMobile?: boolean;
 }
 
 interface TableProps<T> {
+  caption: string;
   columns: Column<T>[];
   data: T[];
+  getRowKey: (row: T) => string;
   isLoading?: boolean;
-  emptyMessage?: string;
+  emptyState?: React.ReactNode;
 }
 
-export function Table<T>({
-  columns,
-  data,
-  isLoading = false,
-  emptyMessage = 'No records found',
-}: TableProps<T>) {
-  if (isLoading) {
-    return (
-      <div className="w-full space-y-3 py-4">
-        {[1, 2, 3, 4, 5].map((i) => (
-          <div key={i} className="h-12 bg-gray-100 animate-pulse rounded-xl" />
-        ))}
-      </div>
-    );
-  }
+export function Table<T>({ caption, columns, data, getRowKey, isLoading = false, emptyState }: TableProps<T>) {
+  const cellVisibility = (col: Column<T>) => (col.hideOnMobile ? 'hidden md:table-cell' : '');
 
   return (
-    <div className="w-full overflow-x-auto rounded-2xl border border-gray-100 shadow-sm bg-white">
-      <table className="w-full text-left border-collapse text-sm">
-        <thead>
-          <tr className="bg-gray-50/75 border-b border-gray-100">
-            {columns.map((col, idx) => (
-              <th
-                key={idx}
-                className="px-5 py-3.5 text-xs font-semibold text-gray-600 uppercase tracking-wider"
-              >
-                {col.header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {data.length === 0 ? (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-left text-sm">
+          <caption className="sr-only">{caption}</caption>
+          <thead className="bg-slate-50">
             <tr>
-              <td
-                colSpan={columns.length}
-                className="px-5 py-8 text-center text-gray-500 font-medium text-sm"
-              >
-                {emptyMessage}
-              </td>
+              {columns.map((col) => (
+                <th
+                  key={col.header}
+                  scope="col"
+                  className={`whitespace-nowrap border-b border-slate-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 ${cellVisibility(col)} ${col.className ?? ''}`}
+                >
+                  {col.header}
+                </th>
+              ))}
             </tr>
-          ) : (
-            data.map((row, rowIdx) => (
-              <tr key={rowIdx} className="hover:bg-gray-50/50 transition-colors">
-                {columns.map((col, colIdx) => (
-                  <td key={colIdx} className="px-5 py-4 text-gray-700 font-normal">
-                    {col.cell
-                      ? col.cell(row)
-                      : col.accessorKey
-                      ? String(row[col.accessorKey] ?? '-')
-                      : '-'}
-                  </td>
-                ))}
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {isLoading ? (
+              Array.from({ length: 4 }, (_, i) => (
+                <tr key={`skeleton-${i}`} aria-hidden="true">
+                  {columns.map((col) => (
+                    <td key={col.header} className={`px-4 py-4 ${cellVisibility(col)}`}>
+                      <div className="h-4 w-3/4 animate-pulse rounded bg-slate-100" />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length} className="px-4 py-10 text-center text-sm text-slate-500">
+                  {emptyState ?? 'No records found.'}
+                </td>
               </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+            ) : (
+              data.map((row) => (
+                <tr key={getRowKey(row)} className="align-top hover:bg-slate-50/60">
+                  {columns.map((col) => (
+                    <td key={col.header} className={`px-4 py-3.5 text-slate-700 ${cellVisibility(col)} ${col.className ?? ''}`}>
+                      {col.cell(row)}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

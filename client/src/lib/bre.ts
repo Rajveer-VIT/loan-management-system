@@ -1,15 +1,22 @@
 import { EMPLOYMENT_MODE } from '../types';
+import { LOAN_CONFIG } from './loanConfig';
+import { businessToday } from './dates';
 
+/**
+ * Client mirror of server/src/services/bre.service.ts, for instant feedback only.
+ * The server re-runs every rule and is the sole authority: this check can be bypassed,
+ * the server's cannot.
+ */
 export interface BRERequest {
-  fullName: string;
   pan: string;
-  dob: string;
+  dob: string; // YYYY-MM-DD
   monthlySalary: number;
   employmentMode: EMPLOYMENT_MODE | string;
 }
 
 export interface BRERuleFailure {
   rule: string;
+  field?: keyof BRERequest;
   message: string;
 }
 
@@ -18,56 +25,66 @@ export interface BREResult {
   failures: BRERuleFailure[];
 }
 
-export function calculateAge(dobStr: string): number {
-  const birthDate = new Date(dobStr);
-  if (isNaN(birthDate.getTime())) return -1;
-  const today = new Date();
-  let age = today.getFullYear() - birthDate.getFullYear();
-  const monthDiff = today.getMonth() - birthDate.getMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-    age--;
-  }
+function parseIsoDate(value: string): [number, number, number] | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const [y, m, d] = match.slice(1).map(Number);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  const valid = probe.getUTCFullYear() === y && probe.getUTCMonth() === m - 1 && probe.getUTCDate() === d;
+  return valid ? [y, m, d] : null;
+}
+
+/** Completed years on today's business-zone date; -1 if invalid or in the future. */
+export function calculateAge(dob: string, today: string = businessToday()): number {
+  const birth = parseIsoDate(dob);
+  const now = parseIsoDate(today);
+  if (!birth || !now) return -1;
+  const [by, bm, bd] = birth;
+  const [ty, tm, td] = now;
+  if (by > ty || (by === ty && (bm > tm || (bm === tm && bd > td)))) return -1;
+  let age = ty - by;
+  if (tm < bm || (tm === bm && td < bd)) age--;
   return age;
 }
 
-export function evaluateBREClient(data: BRERequest): BREResult {
+export function evaluateBREClient(data: BRERequest, today: string = businessToday()): BREResult {
+  const { MIN_AGE, MAX_AGE, MIN_SALARY, PAN_REGEX } = LOAN_CONFIG.BRE;
   const failures: BRERuleFailure[] = [];
 
-  const age = calculateAge(data.dob);
+  const age = calculateAge(data.dob, today);
   if (age === -1) {
-    failures.push({ rule: 'INVALID_DOB', message: 'Date of birth is invalid' });
-  } else if (age < 23 || age > 50) {
+    failures.push({ rule: 'INVALID_DOB', field: 'dob', message: 'Date of birth is invalid or in the future.' });
+  } else if (age < MIN_AGE || age > MAX_AGE) {
     failures.push({
       rule: 'AGE_RESTRICTION',
-      message: `Applicant age must be between 23 and 50 years (Current age: ${age}).`,
+      field: 'dob',
+      message: `Applicant age must be between ${MIN_AGE} and ${MAX_AGE} years (current age: ${age}).`,
     });
   }
 
-  if (data.monthlySalary < 25000) {
+  if (!Number.isFinite(data.monthlySalary) || data.monthlySalary < MIN_SALARY) {
     failures.push({
       rule: 'MIN_SALARY_THRESHOLD',
-      message: 'Monthly salary must be at least ₹25,000.',
+      field: 'monthlySalary',
+      message: `Monthly salary must be at least ₹${MIN_SALARY.toLocaleString('en-IN')}.`,
     });
   }
 
-  const normalizedPAN = data.pan ? data.pan.trim().toUpperCase() : '';
-  const panRegex = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
-  if (!panRegex.test(normalizedPAN)) {
+  if (!PAN_REGEX.test((data.pan ?? '').trim().toUpperCase())) {
     failures.push({
       rule: 'INVALID_PAN_FORMAT',
-      message: 'PAN must be a valid 10-character code matching format ABCDE1234F.',
+      field: 'pan',
+      message: 'PAN must be 10 characters: 5 letters, 4 digits, 1 letter (e.g. ABCDE1234F).',
     });
   }
 
   if (data.employmentMode === EMPLOYMENT_MODE.UNEMPLOYED) {
     failures.push({
       rule: 'DISALLOWED_EMPLOYMENT',
+      field: 'employmentMode',
       message: 'Unemployed applicants are not eligible for a loan.',
     });
   }
 
-  return {
-    eligible: failures.length === 0,
-    failures,
-  };
+  return { eligible: failures.length === 0, failures };
 }

@@ -1,136 +1,113 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { recordPaymentFormSchema } from '../../lib/validators';
+import { toast } from 'sonner';
+import { recordPaymentFormSchema, RecordPaymentFormValues } from '../../lib/validators';
+import { api, getApiError } from '../../lib/api';
+import { businessToday } from '../../lib/dates';
+import { formatCurrency } from '../../lib/format';
+import { ApiResponse, PaymentResult } from '../../types';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
-import { formatCurrency } from '../../lib/format';
-import { api } from '../../lib/api';
-import { toast } from 'sonner';
-import { Receipt, Zap } from 'lucide-react';
-import { AxiosError } from 'axios';
-import { ApiResponse, Loan, Payment } from '../../types';
-
-interface PaymentResult {
-  payment: Payment;
-  loan: Loan;
-  isClosed: boolean;
-}
+import { Alert } from '../ui/Alert';
 
 interface PaymentFormProps {
   loanId: string;
   outstandingBalance: number;
-  onSuccess: (result: PaymentResult) => void;
+  disbursedAt?: string;
+  onRecorded: (result: PaymentResult) => void;
 }
 
-interface FormData {
-  utrNumber: string;
-  amount: number;
-  paymentDate: string;
-}
-
-export const PaymentForm: React.FC<PaymentFormProps> = ({
-  loanId,
-  outstandingBalance,
-  onSuccess,
-}) => {
-  const [isLoading, setIsLoading] = useState(false);
-
-  const todayStr = new Date().toISOString().split('T')[0];
+export const PaymentForm: React.FC<PaymentFormProps> = ({ loanId, outstandingBalance, disbursedAt, onRecorded }) => {
+  const today = businessToday();
+  const minDate = disbursedAt ? businessToday(new Date(disbursedAt)) : '2000-01-01';
+  const schema = useMemo(() => recordPaymentFormSchema(outstandingBalance, minDate, today), [outstandingBalance, minDate, today]);
+  const [serverError, setServerError] = useState<string | null>(null);
 
   const {
     register,
     handleSubmit,
     setValue,
-    formState: { errors },
-  } = useForm<FormData>({
-    resolver: zodResolver(recordPaymentFormSchema),
-    defaultValues: {
-      utrNumber: '',
-      amount: outstandingBalance,
-      paymentDate: todayStr,
-    },
+    setError,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm<RecordPaymentFormValues>({
+    resolver: zodResolver(schema),
+    defaultValues: { utrNumber: '', amount: undefined, paymentDate: today },
   });
 
-  const handlePayFull = () => {
-    setValue('amount', outstandingBalance);
-    toast.info(`Amount set to full outstanding: ${formatCurrency(outstandingBalance)}`);
-  };
-
-  const onSubmit = async (data: FormData) => {
-    if (data.amount > outstandingBalance + 0.01) {
-      toast.error(`Overpayment rejected! Max balance is ${formatCurrency(outstandingBalance)}`);
-      return;
-    }
-
-    setIsLoading(true);
-
+  const onSubmit = async (values: RecordPaymentFormValues) => {
+    setServerError(null);
     try {
-      const res = await api.post(`/collection/loans/${loanId}/payments`, {
-        utrNumber: data.utrNumber.toUpperCase(),
-        amount: Number(data.amount),
-        paymentDate: data.paymentDate,
-      });
-
-      if (res.data.success) {
-        toast.success(res.data.message || 'Payment recorded successfully!');
-        onSuccess(res.data.data);
-      }
-    } catch (error: unknown) {
-      const axiosErr = error as AxiosError<ApiResponse>;
-      toast.error(axiosErr.response?.data?.message || 'Failed to record payment');
-    } finally {
-      setIsLoading(false);
+      const res = await api.post<ApiResponse<PaymentResult>>(`/collection/loans/${loanId}/payments`, values);
+      const result = res.data.data!;
+      toast.success(res.data.message ?? 'Payment recorded');
+      reset({ utrNumber: '', amount: undefined, paymentDate: today });
+      onRecorded(result);
+    } catch (err) {
+      const info = getApiError(err, 'Could not record the payment');
+      const fieldErrors = info.errors.filter((e) => e.field === 'utrNumber' || e.field === 'amount' || e.field === 'paymentDate');
+      fieldErrors.forEach((e) => setError(e.field as keyof RecordPaymentFormValues, { message: e.message }));
+      if (fieldErrors.length === 0) setServerError(info.message);
     }
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 bg-gray-50 border border-gray-200 rounded-2xl p-5">
-      <div className="flex items-center justify-between border-b border-gray-200 pb-3">
-        <h4 className="text-sm font-bold text-gray-900 flex items-center">
-          <Receipt className="w-4 h-4 mr-1.5 text-indigo-600" /> Record New Repayment
-        </h4>
-        <button
-          type="button"
-          onClick={handlePayFull}
-          className="text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-lg flex items-center transition-colors"
+    <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-900">Record a payment</h3>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setValue('amount', outstandingBalance, { shouldValidate: true })}
         >
-          <Zap className="w-3.5 h-3.5 mr-1 text-amber-500 fill-amber-500" /> Pay Full Outstanding
-        </button>
+          Fill full balance ({formatCurrency(outstandingBalance)})
+        </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <Input
-          label="UTR Number"
-          placeholder="e.g. UTR987654321"
-          {...register('utrNumber')}
-          onChange={(e) => setValue('utrNumber', e.target.value.toUpperCase())}
-          error={errors.utrNumber?.message}
-        />
+      {serverError && <Alert tone="danger">{serverError}</Alert>}
 
+      <div className="grid gap-4 sm:grid-cols-3">
         <Input
-          label="Repayment Amount (₹)"
+          label="UTR number"
+          required
+          autoComplete="off"
+          placeholder="e.g. HDFC0012345678"
+          {...register('utrNumber', { setValueAs: (v: string) => v.toUpperCase().trim() })}
+          error={errors.utrNumber?.message}
+          helperText="Unique bank reference"
+          className="font-mono uppercase"
+        />
+        <Input
+          label="Amount (₹)"
+          required
           type="number"
+          inputMode="decimal"
           step="0.01"
-          placeholder="0.00"
+          min="0.01"
+          max={outstandingBalance}
           {...register('amount')}
           error={errors.amount?.message}
+          helperText={`Max ${formatCurrency(outstandingBalance)}`}
         />
-
         <Input
-          label="Payment Date"
+          label="Payment date"
+          required
           type="date"
-          max={todayStr}
+          min={minDate}
+          max={today}
           {...register('paymentDate')}
           error={errors.paymentDate?.message}
         />
       </div>
 
-      <Button type="submit" isLoading={isLoading} className="w-full">
-        Record Payment & Update Loan
-      </Button>
+      <div className="flex justify-end">
+        <Button type="submit" isLoading={isSubmitting} loadingText="Recording…">
+          Record payment
+        </Button>
+      </div>
     </form>
   );
 };

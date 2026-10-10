@@ -1,262 +1,201 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { CheckCircle2, CircleDollarSign, Receipt, Wallet } from 'lucide-react';
 import { PageHeader } from '../../../components/layout/PageHeader';
 import { StatCard } from '../../../components/dashboard/StatCard';
-import { Table } from '../../../components/ui/Table';
-import { Badge } from '../../../components/ui/Badge';
-import { Button } from '../../../components/ui/Button';
-import { Modal } from '../../../components/ui/Modal';
+import { LoanDetails } from '../../../components/dashboard/LoanDetails';
 import { PaymentForm } from '../../../components/dashboard/PaymentForm';
 import { PaymentHistory } from '../../../components/dashboard/PaymentHistory';
-import { Loan, Payment, LOAN_STATUS } from '../../../types';
-import { formatDate, formatCurrency } from '../../../lib/format';
-import { api } from '../../../lib/api';
-import { Receipt, Search, CheckCircle2, DollarSign, Wallet } from 'lucide-react';
+import { Column, Table } from '../../../components/ui/Table';
+import { Button } from '../../../components/ui/Button';
+import { StatusBadge } from '../../../components/ui/Badge';
+import { Modal } from '../../../components/ui/Modal';
+import { SearchInput } from '../../../components/ui/SearchInput';
+import { Pagination } from '../../../components/ui/Pagination';
+import { Alert } from '../../../components/ui/Alert';
+import { Skeleton } from '../../../components/ui/Skeleton';
+import { useApiData, usePaginatedList } from '../../../hooks/useApi';
+import { formatCurrency, maskPan } from '../../../lib/format';
+import { CollectionStats, Loan, LOAN_STATUS, Payment } from '../../../types';
 
-interface PaymentSuccessResult {
-  payment: Payment;
-  loan: Loan;
-  isClosed: boolean;
+type StatusFilter = 'DISBURSED' | 'CLOSED' | 'ALL';
+
+const TABS: Array<{ value: StatusFilter; label: string }> = [
+  { value: 'DISBURSED', label: 'Active' },
+  { value: 'CLOSED', label: 'Closed' },
+  { value: 'ALL', label: 'All' },
+];
+
+const RepaymentProgress: React.FC<{ loan: Loan }> = ({ loan }) => {
+  const pct = loan.totalRepayment > 0 ? Math.min(100, (loan.totalPaid / loan.totalRepayment) * 100) : 0;
+  return (
+    <div className="min-w-[8rem]">
+      <div
+        className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200"
+        role="progressbar"
+        aria-valuenow={Math.round(pct)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Repaid"
+      >
+        <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-1 text-xs text-slate-500">{Math.floor(pct)}% repaid</p>
+    </div>
+  );
+};
+
+function RepaymentModal({ loanId, onClose, onChanged }: { loanId: string | null; onClose: () => void; onChanged: () => void }) {
+  const { data, error, isLoading, reload } = useApiData<{ loan: Loan; payments: Payment[] }>(loanId ? `/collection/loans/${loanId}` : null);
+  const loan = data?.loan;
+
+  return (
+    <Modal isOpen={loanId !== null} onClose={onClose} title="Repayments" size="lg">
+      {error ? (
+        <Alert tone="danger">{error}</Alert>
+      ) : isLoading && !data ? (
+        <Skeleton className="h-48 w-full" />
+      ) : loan && data ? (
+        <div className="space-y-6">
+          <div className="grid grid-cols-3 gap-3 rounded-xl border border-slate-200 p-4 text-center">
+            <div>
+              <p className="text-xs text-slate-500">Total due</p>
+              <p className="font-semibold tabular-nums text-slate-900">{formatCurrency(loan.totalRepayment)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Paid</p>
+              <p className="font-semibold tabular-nums text-emerald-700">{formatCurrency(loan.totalPaid)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500">Outstanding</p>
+              <p className="font-semibold tabular-nums text-slate-900">{formatCurrency(loan.outstandingBalance)}</p>
+            </div>
+          </div>
+
+          {loan.status === LOAN_STATUS.DISBURSED ? (
+            <PaymentForm
+              loanId={loan._id}
+              outstandingBalance={loan.outstandingBalance}
+              disbursedAt={loan.disbursedAt}
+              onRecorded={() => {
+                reload();
+                onChanged();
+              }}
+            />
+          ) : (
+            <Alert tone="success" title="Loan closed">
+              Fully repaid — no further payments can be recorded.
+            </Alert>
+          )}
+
+          <PaymentHistory payments={data.payments} />
+          <details className="rounded-lg border border-slate-200 p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-900">Loan details & audit trail</summary>
+            <div className="mt-4">
+              <LoanDetails loan={loan} showSlip={false} />
+            </div>
+          </details>
+        </div>
+      ) : null}
+    </Modal>
+  );
 }
 
 export default function CollectionDashboardPage() {
-  const [loans, setLoans] = useState<Loan[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
+  const [status, setStatus] = useState<StatusFilter>('DISBURSED');
+  const stats = useApiData<CollectionStats>('/collection/stats');
+  const list = usePaginatedList<Loan>('/collection/loans', { status });
+  const [activeLoanId, setActiveLoanId] = useState<string | null>(null);
 
-  const [activeLoan, setActiveLoan] = useState<Loan | null>(null);
-  const [payments, setPayments] = useState<Payment[]>([]);
-  const [isLoadingPayments, setIsLoadingPayments] = useState(false);
-
-  const fetchLoans = (p = 1, s = '') => {
-    setIsLoading(true);
-    api
-      .get(`/collection/loans?page=${p}&limit=10&search=${encodeURIComponent(s)}`)
-      .then((res) => {
-        if (res.data.success) {
-          setLoans(res.data.data);
-          if (res.data.pagination) {
-            setPage(res.data.pagination.page);
-            setTotalPages(res.data.pagination.totalPages);
-            setTotalCount(res.data.pagination.total);
-          }
-        }
-      })
-      .catch((err) => console.error(err))
-      .finally(() => setIsLoading(false));
-  };
-
-  useEffect(() => {
-    fetchLoans(1, search);
-  }, [search]);
-
-  const loadPaymentHistory = async (loanId: string) => {
-    setIsLoadingPayments(true);
-    try {
-      const res = await api.get(`/collection/loans/${loanId}/payments`);
-      if (res.data.success) {
-        setPayments(res.data.data.payments);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsLoadingPayments(false);
-    }
-  };
-
-  const handleOpenRepaymentModal = (loan: Loan) => {
-    setActiveLoan(loan);
-    loadPaymentHistory(loan._id);
-  };
-
-  const handlePaymentSuccess = (result: PaymentSuccessResult) => {
-    setActiveLoan(result.loan);
-    loadPaymentHistory(result.loan._id);
-    fetchLoans(page, search);
-  };
-
-  const columns = [
+  const columns: Column<Loan>[] = [
     {
-      header: 'Borrower Name',
-      cell: (loan: Loan) => (
+      header: 'Borrower',
+      cell: (loan) => (
         <div>
-          <p className="font-bold text-gray-900">{loan.personalDetails?.fullName || 'Borrower'}</p>
-          <p className="text-xs text-gray-500 font-mono">PAN: {loan.personalDetails?.pan || '-'}</p>
+          <p className="font-medium text-slate-900">{loan.personalDetails?.fullName ?? 'Borrower'}</p>
+          <p className="font-mono text-xs text-slate-500">{maskPan(loan.personalDetails?.pan)}</p>
+        </div>
+      ),
+    },
+    { header: 'Status', cell: (loan) => <StatusBadge status={loan.status} />, hideOnMobile: true },
+    { header: 'Total due', cell: (loan) => <span className="tabular-nums">{formatCurrency(loan.totalRepayment)}</span>, hideOnMobile: true },
+    {
+      header: 'Outstanding',
+      cell: (loan) => (
+        <div className="space-y-1">
+          <p className="font-medium tabular-nums text-slate-900">{formatCurrency(loan.outstandingBalance)}</p>
+          <RepaymentProgress loan={loan} />
         </div>
       ),
     },
     {
-      header: 'Status',
-      cell: (loan: Loan) => <Badge status={loan.status} />,
-    },
-    {
-      header: 'Total Repayment',
-      cell: (loan: Loan) => (
-        <span className="font-semibold text-gray-900">{formatCurrency(loan.totalRepayment)}</span>
-      ),
-    },
-    {
-      header: 'Total Paid',
-      cell: (loan: Loan) => (
-        <span className="font-bold text-emerald-700">{formatCurrency(loan.totalPaid)}</span>
-      ),
-    },
-    {
-      header: 'Outstanding Balance',
-      cell: (loan: Loan) => (
-        <span className={`font-bold ${loan.outstandingBalance > 0 ? 'text-rose-600' : 'text-gray-400'}`}>
-          {formatCurrency(loan.outstandingBalance)}
-        </span>
-      ),
-    },
-    {
-      header: 'Collection Actions',
-      cell: (loan: Loan) => (
-        <Button
-          variant={loan.status === LOAN_STATUS.CLOSED ? 'outline' : 'primary'}
-          size="sm"
-          onClick={() => handleOpenRepaymentModal(loan)}
-        >
-          <Receipt className="w-4 h-4 mr-1.5" />
-          {loan.status === LOAN_STATUS.CLOSED ? 'View History' : 'Record Repayment'}
+      header: 'Action',
+      cell: (loan) => (
+        <Button size="sm" variant={loan.status === LOAN_STATUS.CLOSED ? 'outline' : 'primary'} onClick={() => setActiveLoanId(loan._id)}>
+          <Receipt className="h-4 w-4" aria-hidden="true" />
+          {loan.status === LOAN_STATUS.CLOSED ? 'View' : 'Record payment'}
         </Button>
       ),
     },
   ];
 
+  const s = stats.data;
+
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Repayment & Collection Management"
-        description="Record UTR payments against active disbursed loans and view automated loan closure records."
+        title="Collection — repayments"
+        description="Record borrower payments against disbursed loans. A loan closes automatically when its outstanding balance reaches zero."
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <StatCard
-          title="Active & Closed Portfolios"
-          value={totalCount}
-          description="Disbursed/Closed loans"
-          icon={<Wallet className="w-5 h-5 text-indigo-600" />}
-        />
-        <StatCard
-          title="Total Outstanding Receivables"
-          value={formatCurrency(loans.reduce((sum, l) => sum + (l.outstandingBalance || 0), 0))}
-          description="Pending collection"
-          icon={<DollarSign className="w-5 h-5 text-rose-600" />}
-        />
-        <StatCard
-          title="Total Collections Recovered"
-          value={formatCurrency(loans.reduce((sum, l) => sum + (l.totalPaid || 0), 0))}
-          description="Payments recorded"
-          icon={<CheckCircle2 className="w-5 h-5 text-emerald-600" />}
-        />
+      {stats.error && <Alert tone="danger">{stats.error}</Alert>}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard title="Active loans" value={s ? s.activeDisbursedCount : null} icon={<Wallet className="h-4 w-4" />} />
+        <StatCard title="Outstanding" value={s ? formatCurrency(s.totalOutstanding) : null} icon={<CircleDollarSign className="h-4 w-4" />} />
+        <StatCard title="Collected to date" value={s ? formatCurrency(s.totalCollected) : null} icon={<Receipt className="h-4 w-4" />} />
+        <StatCard title="Closed loans" value={s ? s.closedCount : null} icon={<CheckCircle2 className="h-4 w-4" />} />
       </div>
 
-      <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between">
-        <div className="relative max-w-sm w-full">
-          <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-3" />
-          <input
-            type="text"
-            placeholder="Search by borrower name or PAN..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          />
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div role="tablist" aria-label="Loan status" className="inline-flex rounded-lg border border-slate-200 bg-white p-1">
+          {TABS.map((tab) => (
+            <button
+              key={tab.value}
+              type="button"
+              role="tab"
+              aria-selected={status === tab.value}
+              onClick={() => setStatus(tab.value)}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+                status === tab.value ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
+        <SearchInput value={list.search} onChange={list.setSearch} label="Search loans" placeholder="Search by name or PAN" />
       </div>
 
+      {list.error && <Alert tone="danger">{list.error}</Alert>}
       <Table
+        caption="Loans in collection"
         columns={columns}
-        data={loans}
-        isLoading={isLoading}
-        emptyMessage="No DISBURSED or CLOSED loans found."
+        data={list.items}
+        getRowKey={(loan) => loan._id}
+        isLoading={list.isLoading}
+        emptyState={list.search ? 'No loans match your search.' : status === 'CLOSED' ? 'No closed loans yet.' : 'No active loans to collect.'}
       />
+      <Pagination meta={list.meta} onPageChange={list.setPage} label="loans" />
 
-      {totalPages > 1 && (
-        <div className="flex justify-between items-center text-xs text-gray-500 pt-2">
-          <span>
-            Page {page} of {totalPages}
-          </span>
-          <div className="flex space-x-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => fetchLoans(page - 1, search)}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= totalPages}
-              onClick={() => fetchLoans(page + 1, search)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {activeLoan && (
-        <Modal
-          isOpen={!!activeLoan}
-          onClose={() => setActiveLoan(null)}
-          title={`Repayment Portal: ${activeLoan.personalDetails?.fullName || 'Borrower'}`}
-        >
-          <div className="space-y-6">
-            <div className="bg-slate-900 text-white p-5 rounded-2xl space-y-4">
-              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-                <div>
-                  <span className="text-xs text-slate-400 font-mono">
-                    ID: #{activeLoan._id.slice(-8).toUpperCase()}
-                  </span>
-                  <p className="text-lg font-bold">{formatCurrency(activeLoan.totalRepayment)} Total Payable</p>
-                </div>
-                <Badge status={activeLoan.status} />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                <div>
-                  <span className="text-slate-400 block">Total Paid:</span>
-                  <span className="text-sm font-bold text-emerald-400">
-                    {formatCurrency(activeLoan.totalPaid)}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block">Outstanding Balance:</span>
-                  <span className="text-sm font-bold text-amber-300">
-                    {formatCurrency(activeLoan.outstandingBalance)}
-                  </span>
-                </div>
-              </div>
-
-              {activeLoan.status === LOAN_STATUS.CLOSED && (
-                <div className="bg-blue-900/60 border border-blue-400/40 p-3 rounded-xl flex items-center space-x-2 text-xs text-blue-200">
-                  <CheckCircle2 className="w-5 h-5 text-blue-400 flex-shrink-0" />
-                  <span>
-                    This loan has reached ₹0.00 outstanding balance and is <strong>FULLY CLOSED</strong>.
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {activeLoan.status === LOAN_STATUS.DISBURSED && (
-              <PaymentForm
-                loanId={activeLoan._id}
-                outstandingBalance={activeLoan.outstandingBalance}
-                onSuccess={handlePaymentSuccess}
-              />
-            )}
-
-            <PaymentHistory payments={payments} isLoading={isLoadingPayments} />
-          </div>
-        </Modal>
-      )}
+      <RepaymentModal
+        loanId={activeLoanId}
+        onClose={() => setActiveLoanId(null)}
+        onChanged={() => {
+          list.reload();
+          stats.reload();
+        }}
+      />
     </div>
   );
 }

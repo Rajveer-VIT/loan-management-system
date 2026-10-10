@@ -1,126 +1,85 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
-import { Upload, FileText, CheckCircle2, Trash2 } from 'lucide-react';
-import { Button } from '../ui/Button';
+import React, { useId, useRef, useState } from 'react';
+import { CheckCircle2, FileText, UploadCloud, X } from 'lucide-react';
+import { api, getApiError } from '../../lib/api';
 import { formatFileSize } from '../../lib/format';
-import { api } from '../../lib/api';
-import { toast } from 'sonner';
-import { AxiosError } from 'axios';
+import { LOAN_CONFIG } from '../../lib/loanConfig';
 import { ApiResponse, Loan, SalarySlip } from '../../types';
+import { Button } from '../ui/Button';
+import { Alert } from '../ui/Alert';
+
+const ACCEPTED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png'];
+const ACCEPTED_MIME = ['application/pdf', 'image/jpeg', 'image/png'];
+
+/** Client-side pre-check (the server re-validates extension, MIME type, size and file content). */
+export function validateSlipFile(file: { name: string; type: string; size: number }): string | null {
+  const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+  if (!ACCEPTED_EXTENSIONS.includes(ext) || (file.type && !ACCEPTED_MIME.includes(file.type))) {
+    return 'Please choose a PDF, JPG or PNG file.';
+  }
+  if (file.size > LOAN_CONFIG.MAX_UPLOAD_BYTES) {
+    return `This file is ${formatFileSize(file.size)}. The maximum size is 5 MB.`;
+  }
+  if (file.size === 0) return 'This file is empty.';
+  return null;
+}
 
 interface SalarySlipUploaderProps {
   loanId: string;
   existingSlip?: SalarySlip;
-  onSuccess: (updatedLoan: Loan) => void;
+  onUploaded: (loan: Loan) => void;
 }
 
-export const SalarySlipUploader: React.FC<SalarySlipUploaderProps> = ({
-  loanId,
-  existingSlip,
-  onSuccess,
-}) => {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
+export const SalarySlipUploader: React.FC<SalarySlipUploaderProps> = ({ loanId, existingSlip, onUploaded }) => {
+  const inputId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const validateFile = (file: File): boolean => {
-    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
-    const maxSize = 5 * 1024 * 1024; // 5MB
-
-    if (!allowedTypes.includes(file.type)) {
-      toast.error('Only PDF, JPG, and PNG files are allowed.');
-      return false;
-    }
-    if (file.size > maxSize) {
-      toast.error('File size must be less than 5MB.');
-      return false;
-    }
-    return true;
+  const choose = (candidate: File | undefined) => {
+    if (!candidate) return;
+    const problem = validateSlipFile(candidate);
+    setError(problem);
+    setFile(problem ? null : candidate);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      if (validateFile(file)) {
-        setSelectedFile(file);
-      }
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      if (validateFile(file)) {
-        setSelectedFile(file);
-      }
-    }
-  };
-
-  const handleUpload = async () => {
-    if (!selectedFile) return;
-
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
-    setIsUploading(true);
-    setUploadProgress(20);
-
+  const upload = async () => {
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    setError(null);
+    setProgress(0);
     try {
-      const res = await api.post(`/borrower/loans/${loanId}/salary-slip`, formData, {
+      const res = await api.post<ApiResponse<Loan>>(`/borrower/loans/${loanId}/salary-slip`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        onUploadProgress: (progressEvent) => {
-          if (progressEvent.total) {
-            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            setUploadProgress(percent);
-          }
-        },
+        onUploadProgress: (e) => e.total && setProgress(Math.round((e.loaded * 100) / e.total)),
       });
-
-      if (res.data.success) {
-        toast.success('Salary slip uploaded successfully!');
-        onSuccess(res.data.data);
-      }
-    } catch (error: unknown) {
-      const axiosErr = error as AxiosError<ApiResponse>;
-      toast.error(axiosErr.response?.data?.message || 'Failed to upload salary slip');
+      setFile(null);
+      onUploaded(res.data.data!);
+    } catch (err) {
+      setError(getApiError(err, 'Upload failed. Please try again.').message);
     } finally {
-      setIsUploading(false);
-      setUploadProgress(0);
+      setProgress(null);
     }
   };
 
   return (
-    <div className="space-y-6">
-      {existingSlip && !selectedFile && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-emerald-100 rounded-xl text-emerald-700">
-              <FileText className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-gray-900">{existingSlip.originalName}</p>
-              <p className="text-xs text-gray-500">
-                Uploaded • {formatFileSize(existingSlip.size)}
-              </p>
+    <div className="space-y-4">
+      {existingSlip && !file && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <CheckCircle2 className="h-5 w-5 flex-shrink-0 text-emerald-600" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-slate-900">{existingSlip.originalName}</p>
+              <p className="text-xs text-slate-500">Uploaded · {formatFileSize(existingSlip.size)}</p>
             </div>
           </div>
-          <div className="flex items-center space-x-2">
-            <span className="flex items-center text-xs font-semibold text-emerald-700">
-              <CheckCircle2 className="w-4 h-4 mr-1" /> Uploaded
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              Replace
-            </Button>
-          </div>
+          <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}>
+            Replace file
+          </Button>
         </div>
       )}
 
@@ -130,81 +89,70 @@ export const SalarySlipUploader: React.FC<SalarySlipUploaderProps> = ({
           setDragActive(true);
         }}
         onDragLeave={() => setDragActive(false)}
-        onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
-        className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all duration-200 ${
-          dragActive
-            ? 'border-indigo-600 bg-indigo-50/50'
-            : selectedFile
-            ? 'border-indigo-400 bg-indigo-50/20'
-            : 'border-gray-300 hover:border-indigo-400 bg-gray-50/50 hover:bg-gray-50'
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragActive(false);
+          choose(e.dataTransfer.files?.[0]);
+        }}
+        className={`rounded-xl border-2 border-dashed p-6 text-center transition-colors sm:p-8 ${
+          dragActive ? 'border-brand-500 bg-brand-50' : 'border-slate-300 bg-slate-50'
         }`}
       >
         <input
-          ref={fileInputRef}
+          ref={inputRef}
+          id={inputId}
           type="file"
-          accept=".pdf,.jpg,.jpeg,.png"
-          onChange={handleFileChange}
-          className="hidden"
+          accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+          className="sr-only"
+          onChange={(e) => {
+            choose(e.target.files?.[0]);
+            e.target.value = ''; // allow re-selecting the same file
+          }}
         />
-
-        {selectedFile ? (
-          <div className="flex flex-col items-center space-y-2">
-            <div className="p-3 bg-indigo-100 rounded-2xl text-indigo-600">
-              <FileText className="w-8 h-8" />
-            </div>
-            <p className="text-sm font-bold text-gray-900">{selectedFile.name}</p>
-            <p className="text-xs text-gray-500">{formatFileSize(selectedFile.size)}</p>
+        {file ? (
+          <div className="flex flex-col items-center gap-2">
+            <FileText className="h-8 w-8 text-brand-600" aria-hidden="true" />
+            <p className="max-w-full truncate text-sm font-medium text-slate-900">{file.name}</p>
+            <p className="text-xs text-slate-500">{formatFileSize(file.size)}</p>
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSelectedFile(null);
-              }}
-              className="mt-2 text-xs font-semibold text-rose-600 hover:text-rose-700 flex items-center"
+              onClick={() => setFile(null)}
+              className="inline-flex items-center gap-1 text-xs font-medium text-rose-600 hover:text-rose-700"
             >
-              <Trash2 className="w-3.5 h-3.5 mr-1" /> Remove File
+              <X className="h-3.5 w-3.5" aria-hidden="true" /> Remove
             </button>
           </div>
         ) : (
-          <div className="flex flex-col items-center space-y-2">
-            <div className="p-3 bg-white shadow-sm border border-gray-100 rounded-2xl text-indigo-600">
-              <Upload className="w-8 h-8" />
-            </div>
-            <div>
-              <p className="text-sm font-bold text-gray-900">
-                Click to upload or drag & drop salary slip
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                Supported formats: PDF, JPG, PNG (Max size: 5MB)
-              </p>
-            </div>
+          <div className="flex flex-col items-center gap-2">
+            <UploadCloud className="h-8 w-8 text-slate-400" aria-hidden="true" />
+            <p className="text-sm text-slate-700">
+              Drag and drop your salary slip here, or{' '}
+              <label htmlFor={inputId} className="cursor-pointer font-semibold text-brand-700 underline-offset-2 hover:underline">
+                browse files
+              </label>
+            </p>
+            <p className="text-xs text-slate-500">PDF, JPG or PNG · up to 5 MB</p>
           </div>
         )}
       </div>
 
-      {isUploading && (
-        <div className="space-y-2">
-          <div className="flex justify-between text-xs font-semibold text-gray-700">
-            <span>Uploading document...</span>
-            <span>{uploadProgress}%</span>
+      {error && <Alert tone="danger">{error}</Alert>}
+
+      {progress !== null && (
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-slate-600">
+            <span>Uploading…</span>
+            <span>{progress}%</span>
           </div>
-          <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-indigo-600 transition-all duration-200"
-              style={{ width: `${uploadProgress}%` }}
-            />
+          <div className="h-2 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100} aria-label="Upload progress">
+            <div className="h-full bg-brand-600 transition-all" style={{ width: `${progress}%` }} />
           </div>
         </div>
       )}
 
-      {selectedFile && (
-        <Button
-          onClick={handleUpload}
-          isLoading={isUploading}
-          className="w-full"
-        >
-          Upload & Continue
+      {file && (
+        <Button onClick={upload} isLoading={progress !== null} loadingText="Uploading…" className="w-full sm:w-auto">
+          Upload salary slip
         </Button>
       )}
     </div>

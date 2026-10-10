@@ -1,153 +1,118 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { FileUp, UserCheck, UserPlus, Users } from 'lucide-react';
 import { PageHeader } from '../../../components/layout/PageHeader';
 import { StatCard } from '../../../components/dashboard/StatCard';
-import { Table } from '../../../components/ui/Table';
-import { Badge } from '../../../components/ui/Badge';
-import { Input } from '../../../components/ui/Input';
-import { Button } from '../../../components/ui/Button';
-import { Lead } from '../../../types';
-import { formatDate, formatCurrency } from '../../../lib/format';
-import { api } from '../../../lib/api';
-import { Users, Search, Filter } from 'lucide-react';
+import { Column, Table } from '../../../components/ui/Table';
+import { Badge, BadgeTone } from '../../../components/ui/Badge';
+import { SearchInput } from '../../../components/ui/SearchInput';
+import { Pagination } from '../../../components/ui/Pagination';
+import { Alert } from '../../../components/ui/Alert';
+import { useApiData, usePaginatedList } from '../../../hooks/useApi';
+import { formatDate, formatDateTime } from '../../../lib/format';
+import { Lead, LeadStage, SalesStats } from '../../../types';
+
+const STAGES: Record<LeadStage, { label: string; tone: BadgeTone; hint: string }> = {
+  REGISTERED: { label: 'Registered', tone: 'neutral', hint: 'Signed up, no details yet' },
+  PROFILE_SAVED: { label: 'Eligibility passed', tone: 'info', hint: 'Passed BRE, slip pending' },
+  SLIP_UPLOADED: { label: 'Slip uploaded', tone: 'warning', hint: 'Only loan terms left' },
+};
+
+const FILTERS: Array<{ value: LeadStage | 'ALL'; label: string }> = [
+  { value: 'ALL', label: 'All leads' },
+  { value: 'REGISTERED', label: 'Registered' },
+  { value: 'PROFILE_SAVED', label: 'Eligibility passed' },
+  { value: 'SLIP_UPLOADED', label: 'Slip uploaded' },
+];
 
 export default function SalesDashboardPage() {
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalLeads, setTotalLeads] = useState(0);
+  const [stage, setStage] = useState<LeadStage | 'ALL'>('ALL');
+  const stats = useApiData<SalesStats>('/sales/stats');
+  const list = usePaginatedList<Lead>('/sales/leads', { stage: stage === 'ALL' ? undefined : stage });
 
-  const fetchLeads = (p = 1, s = '') => {
-    setIsLoading(true);
-    api
-      .get(`/sales/leads?page=${p}&limit=10&search=${encodeURIComponent(s)}`)
-      .then((res) => {
-        if (res.data.success) {
-          setLeads(res.data.data);
-          if (res.data.pagination) {
-            setPage(res.data.pagination.page);
-            setTotalPages(res.data.pagination.totalPages);
-            setTotalLeads(res.data.pagination.total);
-          }
-        }
-      })
-      .catch((err) => console.error(err))
-      .finally(() => setIsLoading(false));
-  };
-
-  useEffect(() => {
-    fetchLeads(1, search);
-  }, [search]);
-
-  const columns = [
+  const columns: Column<Lead>[] = [
     {
-      header: 'Borrower Name',
-      accessorKey: 'name' as const,
-      cell: (lead: Lead) => (
+      header: 'Lead',
+      cell: (lead) => (
         <div>
-          <p className="font-bold text-gray-900">{lead.name}</p>
-          <p className="text-xs text-gray-500">{lead.email}</p>
+          <p className="font-medium text-slate-900">{lead.name}</p>
+          <a href={`mailto:${lead.email}`} className="text-xs text-brand-700 hover:underline">
+            {lead.email}
+          </a>
         </div>
       ),
     },
     {
-      header: 'Signup Date',
-      cell: (lead: Lead) => formatDate(lead.createdAt),
+      header: 'Stage',
+      cell: (lead) => (
+        <div className="space-y-1">
+          <Badge tone={STAGES[lead.stage].tone}>{STAGES[lead.stage].label}</Badge>
+          <p className="hidden text-xs text-slate-500 sm:block">{STAGES[lead.stage].hint}</p>
+        </div>
+      ),
     },
-    {
-      header: 'Funnel Progress Stage',
-      cell: (lead: Lead) => {
-        let variant: 'info' | 'success' | 'warning' | 'danger' | 'neutral' = 'neutral';
-        if (lead.stage === 'REGISTERED') variant = 'neutral';
-        if (lead.stage === 'PROFILE_SAVED') variant = 'info';
-        if (lead.stage === 'SLIP_UPLOADED') variant = 'warning';
-        if (['APPLIED', 'SANCTIONED', 'DISBURSED', 'CLOSED'].includes(lead.stage)) variant = 'success';
-
-        return <Badge variant={variant}>{lead.stage.replace('_', ' ')}</Badge>;
-      },
-    },
-    {
-      header: 'Associated Loan Amount',
-      cell: (lead: Lead) =>
-        lead.loanAmount ? (
-          <span className="font-bold text-gray-900">{formatCurrency(lead.loanAmount)}</span>
-        ) : (
-          <span className="text-gray-400 text-xs">-</span>
-        ),
-    },
+    { header: 'Signed up', cell: (lead) => formatDate(lead.createdAt), hideOnMobile: true },
+    { header: 'Last activity', cell: (lead) => formatDateTime(lead.lastActivityAt), hideOnMobile: true },
   ];
+
+  const s = stats.data;
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Sales Lead Funnel Tracking"
-        description="Monitor registered borrowers and track application completion stages."
+        title="Sales — lead tracking"
+        description="Borrowers who have registered but not yet submitted a loan application. They leave this list once they apply."
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      {stats.error && <Alert tone="danger">{stats.error}</Alert>}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard title="Open leads" value={s ? s.totalLeads : null} icon={<Users className="h-4 w-4" />} />
+        <StatCard title="New today" value={s ? s.newLeadsToday : null} icon={<UserPlus className="h-4 w-4" />} />
         <StatCard
-          title="Total Registered Leads"
-          value={totalLeads}
-          description="Borrower accounts created"
-          icon={<Users className="w-5 h-5" />}
+          title="Ready to apply"
+          value={s ? s.funnel.SLIP_UPLOADED : null}
+          description="Slip uploaded"
+          icon={<FileUp className="h-4 w-4" />}
         />
         <StatCard
-          title="Active Funnel Leads"
-          value={leads.filter((l) => ['PROFILE_SAVED', 'SLIP_UPLOADED'].includes(l.stage)).length}
-          description="Incomplete draft applications"
-          icon={<Filter className="w-5 h-5" />}
-        />
-        <StatCard
-          title="Submitted Applications"
-          value={leads.filter((l) => l.stage === 'APPLIED').length}
-          description="Ready for Sanction review"
-          icon={<Users className="w-5 h-5 text-emerald-600" />}
+          title="Converted"
+          value={s ? s.convertedBorrowers : null}
+          description="Borrowers who applied"
+          icon={<UserCheck className="h-4 w-4" />}
         />
       </div>
 
-      <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between">
-        <div className="relative max-w-sm w-full">
-          <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-3" />
-          <input
-            type="text"
-            placeholder="Search by lead name or email..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          />
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div role="group" aria-label="Filter by stage" className="flex flex-wrap gap-2">
+          {FILTERS.map((f) => (
+            <button
+              key={f.value}
+              type="button"
+              aria-pressed={stage === f.value}
+              onClick={() => setStage(f.value)}
+              className={`rounded-full px-3 py-1.5 text-sm font-medium ring-1 ring-inset transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+                stage === f.value ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-slate-600 ring-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              {f.label}
+              {s && f.value !== 'ALL' && <span className="ml-1.5 opacity-75">{s.funnel[f.value]}</span>}
+            </button>
+          ))}
         </div>
+        <SearchInput value={list.search} onChange={list.setSearch} label="Search leads" placeholder="Search by name or email" />
       </div>
 
-      <Table columns={columns} data={leads} isLoading={isLoading} emptyMessage="No sales leads found matching search criteria." />
-
-      {totalPages > 1 && (
-        <div className="flex justify-between items-center text-xs text-gray-500 pt-2">
-          <span>
-            Page {page} of {totalPages}
-          </span>
-          <div className="flex space-x-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => fetchLeads(page - 1, search)}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page >= totalPages}
-              onClick={() => fetchLeads(page + 1, search)}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      {list.error && <Alert tone="danger">{list.error}</Alert>}
+      <Table
+        caption="Sales leads"
+        columns={columns}
+        data={list.items}
+        getRowKey={(lead) => lead.id}
+        isLoading={list.isLoading}
+        emptyState={list.search ? 'No leads match your search.' : 'No open leads. Every registered borrower has applied.'}
+      />
+      <Pagination meta={list.meta} onPageChange={list.setPage} label="leads" />
     </div>
   );
 }

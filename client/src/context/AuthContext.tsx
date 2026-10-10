@@ -1,91 +1,69 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, ROLES } from '../types';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { User, ApiResponse } from '../types';
 import { getStoredToken, getStoredUser, setStoredToken, setStoredUser, removeStoredToken } from '../lib/auth';
 import { api } from '../lib/api';
 
 interface AuthContextType {
   user: User | null;
-  token: string | null;
   isLoading: boolean;
   login: (token: string, user: User) => void;
   logout: () => void;
-  refetchUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    const savedToken = getStoredToken();
-    const savedUser = getStoredUser();
-
-    if (savedToken) {
-      setToken(savedToken);
-      if (savedUser) {
-        setUser(savedUser);
-      }
-      // Verify token with backend
-      api
-        .get('/auth/me')
-        .then((res) => {
-          if (res.data.success) {
-            setUser(res.data.data);
-            setStoredUser(res.data.data);
-          }
-        })
-        .catch(() => {
-          logout();
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    } else {
-      setIsLoading(false);
-    }
+  const logout = useCallback(() => {
+    removeStoredToken();
+    setUser(null);
   }, []);
 
-  const login = (newToken: string, newUser: User) => {
-    setToken(newToken);
-    setUser(newUser);
-    setStoredToken(newToken);
+  const login = useCallback((token: string, newUser: User) => {
+    setStoredToken(token);
     setStoredUser(newUser);
-  };
+    setUser(newUser);
+  }, []);
 
-  const logout = () => {
-    setToken(null);
-    setUser(null);
-    removeStoredToken();
-  };
+  // Restore the session on load, then confirm it with the server (role may have changed,
+  // account may be deactivated, token may have expired).
+  useEffect(() => {
+    if (!getStoredToken()) {
+      setIsLoading(false);
+      return;
+    }
+    setUser(getStoredUser());
 
-  const refetchUser = async () => {
-    try {
-      const res = await api.get('/auth/me');
-      if (res.data.success) {
+    let cancelled = false;
+    api
+      .get<ApiResponse<User>>('/auth/me')
+      .then((res) => {
+        if (cancelled || !res.data.data) return;
         setUser(res.data.data);
         setStoredUser(res.data.data);
-      }
-    } catch (error) {
-      console.error('Failed to refetch user:', error);
-    }
-  };
+      })
+      .catch(() => {
+        if (!cancelled) logout();
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [logout]);
 
-  return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, logout, refetchUser }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  const value = useMemo(() => ({ user, isLoading, login, logout }), [user, isLoading, login, logout]);
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
   return context;
 };

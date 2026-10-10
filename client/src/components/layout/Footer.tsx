@@ -1,16 +1,10 @@
 import React from 'react';
-import { Shield } from 'lucide-react';
 
-export const Footer: React.FC = () => {
-  return (
-    <footer className="bg-white border-t border-gray-100 py-8 text-center text-xs text-gray-500">
-      <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div className="flex items-center space-x-2">
-          <Shield className="w-4 h-4 text-indigo-600" />
-          <span className="font-semibold text-gray-700">FinFlow Loan Management Platform</span>
-        </div>
-        <p>© 2026 FinFlow LMS Monorepo. All rights reserved. Built with Next.js, Express & Mongoose.</p>
-      </div>
-    </footer>
-  );
-};
+export const Footer: React.FC = () => (
+  <footer className="border-t border-slate-200 bg-white">
+    <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-4 py-6 text-xs text-slate-500 sm:flex-row sm:px-6 lg:px-8">
+      <p>FinFlow Loan Management System</p>
+      <p>Simple interest at 12% p.a. · Loans of ₹50,000–₹5,00,000 for 30–365 days</p>
+    </div>
+  </footer>
+);

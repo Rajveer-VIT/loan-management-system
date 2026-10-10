@@ -1,46 +1,23 @@
 'use client';
 
-import React, { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuth } from '../../context/AuthContext';
+import React from 'react';
+import { RouteGuard } from '../../components/auth/RouteGuard';
 import { Navbar } from '../../components/layout/Navbar';
-import { Sidebar } from '../../components/layout/Sidebar';
-import { Spinner } from '../../components/ui/Spinner';
-import { ROLES } from '../../types';
+import { MobileModuleNav, Sidebar } from '../../components/layout/Sidebar';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const { user, isLoading } = useAuth();
-
-  useEffect(() => {
-    if (!isLoading) {
-      if (!user) {
-        router.push('/login');
-      } else if (user.role === ROLES.BORROWER) {
-        router.push('/unauthorized');
-      }
-    }
-  }, [user, isLoading, router]);
-
-  if (isLoading || !user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <Spinner size="lg" />
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50">
-      <Navbar />
-
-      <div className="flex-1 flex max-w-7xl w-full mx-auto">
-        <Sidebar />
-
-        <main className="flex-1 p-6 sm:p-8 overflow-x-hidden">
-          {children}
-        </main>
+    <RouteGuard>
+      <div className="flex min-h-screen flex-col bg-slate-50">
+        <Navbar />
+        <MobileModuleNav />
+        <div className="mx-auto flex w-full max-w-7xl flex-1">
+          <Sidebar />
+          <main id="main" className="min-w-0 flex-1 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+            {children}
+          </main>
+        </div>
       </div>
-    </div>
+    </RouteGuard>
   );
 }

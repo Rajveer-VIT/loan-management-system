@@ -1,188 +1,139 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { Slider } from '../../../../components/ui/Slider';
 import { LoanSummaryPanel } from '../../../../components/borrower/LoanSummaryPanel';
 import { Button } from '../../../../components/ui/Button';
-import { Modal } from '../../../../components/ui/Modal';
+import { ConfirmDialog } from '../../../../components/ui/ConfirmDialog';
+import { Alert } from '../../../../components/ui/Alert';
+import { Skeleton } from '../../../../components/ui/Skeleton';
+import { useDraft } from '../../../../hooks/useDraft';
 import { calculateLoanDetails } from '../../../../lib/loanCalculator';
-import { formatCurrency } from '../../../../lib/format';
-import { api } from '../../../../lib/api';
-import { toast } from 'sonner';
-import { ArrowLeft, CheckCircle2, ShieldCheck } from 'lucide-react';
-import { AxiosError } from 'axios';
-import { ApiResponse } from '../../../../types';
+import { LOAN_CONFIG } from '../../../../lib/loanConfig';
+import { formatCurrency, formatRupees } from '../../../../lib/format';
+import { api, getApiError } from '../../../../lib/api';
+import { ApiResponse, Loan } from '../../../../types';
 
 export default function LoanConfigStepPage() {
   const router = useRouter();
-  const [loanId, setLoanId] = useState<string | null>(null);
-  const [amount, setAmount] = useState<number>(100000);
-  const [tenureDays, setTenureDays] = useState<number>(180);
-  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState<boolean>(false);
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [isSuccess, setIsSuccess] = useState<boolean>(false);
+  const { data, error, ready } = useDraft('loan-config');
+  const [amount, setAmount] = useState(100000);
+  const [tenureDays, setTenureDays] = useState(180);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState<Loan | null>(null);
 
-  useEffect(() => {
-    api.get('/borrower/loans/draft').then((res) => {
-      if (res.data.success && res.data.data.draftLoan) {
-        const draft = res.data.data.draftLoan;
-        setLoanId(draft._id);
-        if (draft.amount) setAmount(draft.amount);
-        if (draft.tenureDays) setTenureDays(draft.tenureDays);
-      } else {
-        router.push('/apply/personal-details');
-      }
-    }).catch(() => {
-      router.push('/apply/personal-details');
-    });
-  }, [router]);
+  const preview = calculateLoanDetails(amount, tenureDays);
 
-  const calcDetails = calculateLoanDetails(amount, tenureDays);
-
-  const handleConfirmSubmit = async () => {
-    if (!loanId) return;
-    setIsSubmitting(true);
-
+  const submit = async () => {
+    if (!data?.draftLoan) return;
+    setSubmitError(null);
     try {
-      const res = await api.post(`/borrower/loans/${loanId}/apply`, {
-        amount,
-        tenureDays,
-      });
-
-      if (res.data.success) {
-        setIsConfirmModalOpen(false);
-        setIsSuccess(true);
-        toast.success('Loan application submitted successfully!');
-      }
-    } catch (error: unknown) {
-      const axiosErr = error as AxiosError<ApiResponse>;
-      toast.error(axiosErr.response?.data?.message || 'Failed to submit loan application');
+      // Only the chosen terms are sent; interest and totals are computed by the server.
+      const res = await api.post<ApiResponse<Loan>>(`/borrower/loans/${data.draftLoan._id}/apply`, { amount, tenureDays });
+      setSubmitted(res.data.data!);
+    } catch (err) {
+      setSubmitError(getApiError(err, 'Could not submit your application').message);
     } finally {
-      setIsSubmitting(false);
+      setConfirmOpen(false);
     }
   };
 
-  if (isSuccess) {
+  if (submitted) {
     return (
-      <div className="text-center py-12 space-y-6 animate-fade-in">
-        <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto shadow-lg shadow-emerald-100">
-          <CheckCircle2 className="w-12 h-12 stroke-[2.5]" />
-        </div>
-        <div className="space-y-2 max-w-md mx-auto">
-          <h2 className="text-2xl font-black text-gray-900">Application Submitted!</h2>
-          <p className="text-sm text-gray-600 leading-relaxed">
-            Your application for <strong>{formatCurrency(amount)}</strong> for {tenureDays} days is now in the <strong>APPLIED</strong> queue for Underwriting review.
+      <div className="mx-auto max-w-md space-y-5 py-6 text-center">
+        <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-600" aria-hidden="true" />
+        <div>
+          <h2 className="text-xl font-semibold text-slate-900">Application submitted</h2>
+          <p className="mt-2 text-sm text-slate-600">
+            You applied for <strong>{formatCurrency(submitted.amount)}</strong> over {submitted.tenureDays} days. Total repayment:{' '}
+            <strong>{formatCurrency(submitted.totalRepayment)}</strong>. Our sanction team will review it shortly.
           </p>
         </div>
-        <div className="pt-4">
-          <Button variant="primary" onClick={() => router.push('/my-loans')}>
-            Go to My Loans Dashboard
-          </Button>
-        </div>
+        <Link href="/my-loans">
+          <Button>Track my application</Button>
+        </Link>
       </div>
     );
   }
 
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!ready) return <Skeleton className="h-64 w-full" />;
+
   return (
-    <div className="space-y-8">
-      <div className="border-b border-gray-100 pb-4">
-        <h2 className="text-lg font-bold text-gray-900">Step 3: Configure Loan Terms</h2>
-        <p className="text-xs text-gray-500">
-          Select your required principal amount and tenure duration. Interest is fixed at 12% p.a.
-        </p>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-slate-900">Choose your loan</h2>
+        <p className="text-sm text-slate-500">Fixed {LOAN_CONFIG.INTEREST_RATE_PER_ANNUM}% p.a. simple interest. No processing fees.</p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        <div className="lg:col-span-7 space-y-8 bg-gray-50/50 p-6 rounded-2xl border border-gray-100">
+      {submitError && <Alert tone="danger">{submitError}</Alert>}
+
+      <div className="grid gap-6 lg:grid-cols-5">
+        <div className="space-y-8 rounded-xl border border-slate-200 p-5 lg:col-span-3">
           <Slider
-            label="Required Loan Amount"
-            prefix="₹"
+            label="Loan amount"
             value={amount}
-            min={50000}
-            max={500000}
-            step={5000}
+            min={LOAN_CONFIG.MIN_AMOUNT}
+            max={LOAN_CONFIG.MAX_AMOUNT}
+            step={LOAN_CONFIG.AMOUNT_STEP}
             onChange={setAmount}
+            format={formatRupees}
+            unitLabel="₹"
           />
-
           <Slider
-            label="Tenure Duration"
-            unit=" Days"
+            label="Tenure"
             value={tenureDays}
-            min={30}
-            max={365}
-            step={5}
+            min={LOAN_CONFIG.MIN_TENURE_DAYS}
+            max={LOAN_CONFIG.MAX_TENURE_DAYS}
+            step={LOAN_CONFIG.TENURE_STEP}
             onChange={setTenureDays}
+            format={(d) => `${d} days`}
+            unitLabel="days"
           />
-
-          <div className="p-4 bg-indigo-50/60 rounded-xl border border-indigo-100 text-xs text-indigo-900 flex items-start space-x-3">
-            <ShieldCheck className="w-5 h-5 text-indigo-600 flex-shrink-0 mt-0.5" />
-            <p>
-              Your simple interest and total repayment are computed deterministically on our server. No extra processing fees or early repayment penalties apply.
-            </p>
-          </div>
         </div>
-
-        <div className="lg:col-span-5 space-y-6">
-          <LoanSummaryPanel details={calcDetails} />
-
-          <Button
-            variant="primary"
-            size="lg"
-            onClick={() => setIsConfirmModalOpen(true)}
-            className="w-full shadow-indigo-200"
-          >
-            Apply for Loan ({formatCurrency(amount)})
-          </Button>
-
-          <Button
-            variant="ghost"
-            onClick={() => router.push('/apply/salary-slip')}
-            className="w-full text-xs"
-          >
-            <ArrowLeft className="w-3.5 h-3.5 mr-1" /> Back to Salary Slip
-          </Button>
+        <div className="lg:col-span-2">
+          <LoanSummaryPanel details={preview} />
         </div>
       </div>
 
-      <Modal
-        isOpen={isConfirmModalOpen}
-        onClose={() => setIsConfirmModalOpen(false)}
-        title="Confirm Loan Application Submission"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-gray-600 leading-relaxed">
-            Are you sure you want to submit your loan application with the following finalized terms?
-          </p>
-          <div className="bg-gray-50 p-4 rounded-xl space-y-2 text-xs text-gray-700">
-            <div className="flex justify-between">
-              <span>Principal Amount:</span>
-              <strong className="text-gray-900">{formatCurrency(calcDetails.amount)}</strong>
-            </div>
-            <div className="flex justify-between">
-              <span>Tenure Duration:</span>
-              <strong className="text-gray-900">{calcDetails.tenureDays} Days</strong>
-            </div>
-            <div className="flex justify-between">
-              <span>Interest Rate:</span>
-              <strong className="text-gray-900">12.00% p.a.</strong>
-            </div>
-            <div className="flex justify-between border-t border-gray-200 pt-2 text-sm font-bold text-indigo-900">
-              <span>Total Repayment:</span>
-              <span>{formatCurrency(calcDetails.totalRepayment)}</span>
-            </div>
-          </div>
+      <div className="flex flex-col-reverse gap-2 border-t border-slate-200 pt-5 sm:flex-row sm:justify-between">
+        <Button variant="outline" onClick={() => router.push('/apply/salary-slip')}>
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back
+        </Button>
+        <Button onClick={() => setConfirmOpen(true)}>Apply for {formatRupees(amount)}</Button>
+      </div>
 
-          <div className="flex justify-end space-x-3 pt-3">
-            <Button variant="outline" onClick={() => setIsConfirmModalOpen(false)} disabled={isSubmitting}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={handleConfirmSubmit} isLoading={isSubmitting}>
-              Yes, Submit Application
-            </Button>
+      <ConfirmDialog
+        isOpen={confirmOpen}
+        title="Submit your application?"
+        confirmLabel="Submit application"
+        onConfirm={submit}
+        onClose={() => setConfirmOpen(false)}
+      >
+        <p className="mb-3">You can&apos;t change these terms after submitting.</p>
+        <dl className="space-y-1.5 rounded-lg bg-slate-50 p-3">
+          <div className="flex justify-between">
+            <dt>Loan amount</dt>
+            <dd className="font-medium text-slate-900">{formatCurrency(preview.amount)}</dd>
           </div>
-        </div>
-      </Modal>
+          <div className="flex justify-between">
+            <dt>Tenure</dt>
+            <dd className="font-medium text-slate-900">{preview.tenureDays} days</dd>
+          </div>
+          <div className="flex justify-between">
+            <dt>Interest ({preview.interestRate}% p.a.)</dt>
+            <dd className="font-medium text-slate-900">{formatCurrency(preview.simpleInterest)}</dd>
+          </div>
+          <div className="flex justify-between border-t border-slate-200 pt-1.5">
+            <dt className="font-medium text-slate-900">Total repayment</dt>
+            <dd className="font-semibold text-slate-900">{formatCurrency(preview.totalRepayment)}</dd>
+          </div>
+        </dl>
+      </ConfirmDialog>
     </div>
   );
 }

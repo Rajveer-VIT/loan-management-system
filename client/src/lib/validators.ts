@@ -2,32 +2,53 @@ import { z } from 'zod';
 import { EMPLOYMENT_MODE } from '../types';
 
 export const loginFormSchema = z.object({
-  email: z.string().email('Please enter a valid email address'),
+  email: z.string().trim().email('Please enter a valid email address'),
   password: z.string().min(1, 'Password is required'),
 });
 
 export const signupFormSchema = z.object({
-  name: z.string().min(2, 'Name must be at least 2 characters'),
-  email: z.string().email('Please enter a valid email address'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  name: z.string().trim().min(2, 'Name must be at least 2 characters').max(100, 'Name is too long'),
+  email: z.string().trim().email('Please enter a valid email address'),
+  password: z.string().min(8, 'Password must be at least 8 characters').max(72, 'Password must be at most 72 characters'),
 });
 
+// Shape checks only; the eligibility rules (age, salary, PAN, employment) are shown
+// through the BRE mirror so the borrower sees the same messages the server returns.
 export const personalDetailsFormSchema = z.object({
-  fullName: z.string().min(2, 'Full name is required'),
-  pan: z
-    .string()
-    .regex(/^[A-Za-z]{5}[0-9]{4}[A-Za-z]$/, 'PAN format must be ABCDE1234F'),
+  fullName: z.string().trim().min(2, 'Full name is required').max(100, 'Full name is too long'),
+  pan: z.string().trim().min(1, 'PAN is required'),
   dob: z.string().min(1, 'Date of birth is required'),
-  monthlySalary: z.coerce.number().min(1, 'Salary must be greater than 0'),
+  monthlySalary: z.coerce
+    .number({ invalid_type_error: 'Enter your monthly salary' })
+    .nonnegative('Salary cannot be negative'),
   employmentMode: z.nativeEnum(EMPLOYMENT_MODE),
 });
 
-export const recordPaymentFormSchema = z.object({
-  utrNumber: z.string().min(3, 'UTR number is required'),
-  amount: z.coerce.number().positive('Amount must be greater than 0'),
-  paymentDate: z.string().min(1, 'Payment date is required'),
-});
+export type PersonalDetailsFormValues = z.infer<typeof personalDetailsFormSchema>;
 
-export const rejectFormSchema = z.object({
-  rejectionReason: z.string().min(5, 'Rejection reason must be at least 5 characters long'),
-});
+const hasAtMostTwoDecimals = (n: number) => Math.abs(n * 100 - Math.round(n * 100)) < 1e-6;
+
+export function recordPaymentFormSchema(outstandingBalance: number, minDate: string, maxDate: string) {
+  return z.object({
+    utrNumber: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .regex(/^[A-Z0-9]{6,30}$/, 'UTR must be 6–30 letters or digits'),
+    amount: z.coerce
+      .number({ invalid_type_error: 'Enter an amount' })
+      .positive('Amount must be greater than 0')
+      .refine(hasAtMostTwoDecimals, 'At most 2 decimal places')
+      .refine((n) => n <= outstandingBalance, `Cannot exceed the outstanding ₹${outstandingBalance.toLocaleString('en-IN')}`),
+    paymentDate: z
+      .string()
+      .min(1, 'Payment date is required')
+      .refine((d) => d <= maxDate, 'Payment date cannot be in the future')
+      .refine((d) => d >= minDate, `Payment date cannot be before the disbursal date (${minDate})`),
+  });
+}
+
+export type RecordPaymentFormValues = z.infer<ReturnType<typeof recordPaymentFormSchema>>;
+
+export const REJECTION_REASON_MIN = 10;
+export const REJECTION_REASON_MAX = 500;

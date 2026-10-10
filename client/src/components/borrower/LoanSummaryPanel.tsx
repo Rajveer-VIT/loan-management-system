@@ -1,71 +1,41 @@
 import React from 'react';
-import { formatCurrency } from '../../lib/format';
 import { CalculationResult } from '../../lib/loanCalculator';
-import { ShieldCheck, Calendar, Percent, Banknote } from 'lucide-react';
+import { formatCurrency } from '../../lib/format';
 
-interface LoanSummaryPanelProps {
-  details: CalculationResult;
-}
-
-export const LoanSummaryPanel: React.FC<LoanSummaryPanelProps> = ({ details }) => {
-  return (
-    <div className="bg-gradient-to-br from-indigo-900 via-indigo-800 to-indigo-950 text-white rounded-2xl p-6 shadow-xl space-y-6">
-      <div className="flex items-center justify-between border-b border-indigo-700/50 pb-4">
-        <div>
-          <span className="text-xs font-semibold uppercase tracking-wider text-indigo-200">
-            Loan Summary
-          </span>
-          <h3 className="text-xl font-black tracking-tight text-white mt-0.5">
-            Calculation Breakup
-          </h3>
-        </div>
-        <div className="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full text-xs font-bold flex items-center">
-          <ShieldCheck className="w-3.5 h-3.5 mr-1" /> 12% Fixed P.A.
-        </div>
+/** Live repayment breakdown. aria-live announces updated totals as the sliders move. */
+export const LoanSummaryPanel: React.FC<{ details: CalculationResult }> = ({ details }) => (
+  <section aria-labelledby="loan-summary-heading" className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+    <h3 id="loan-summary-heading" className="text-sm font-semibold text-slate-900">
+      Repayment summary
+    </h3>
+    <dl className="mt-4 space-y-3 text-sm">
+      <div className="flex justify-between">
+        <dt className="text-slate-500">Principal (P)</dt>
+        <dd className="font-medium tabular-nums text-slate-900">{formatCurrency(details.amount)}</dd>
       </div>
-
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-indigo-200 flex items-center">
-            <Banknote className="w-4 h-4 mr-1.5 text-indigo-400" /> Principal Amount
-          </span>
-          <span className="text-base font-bold text-white">
-            {formatCurrency(details.amount)}
-          </span>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-indigo-200 flex items-center">
-            <Percent className="w-4 h-4 mr-1.5 text-indigo-400" /> Fixed Interest Rate
-          </span>
-          <span className="text-sm font-bold text-white">12.00% p.a.</span>
-        </div>
-
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-indigo-200 flex items-center">
-            <Calendar className="w-4 h-4 mr-1.5 text-indigo-400" /> Tenure Duration
-          </span>
-          <span className="text-sm font-bold text-white">{details.tenureDays} Days</span>
-        </div>
-
-        <div className="flex items-center justify-between pt-2 border-t border-indigo-700/40">
-          <span className="text-xs text-indigo-200">Total Interest (SI)</span>
-          <span className="text-sm font-bold text-emerald-400">
-            + {formatCurrency(details.simpleInterest)}
-          </span>
-        </div>
+      <div className="flex justify-between">
+        <dt className="text-slate-500">Interest rate (R)</dt>
+        <dd className="font-medium text-slate-900">{details.interestRate}% p.a.</dd>
       </div>
-
-      <div className="pt-4 border-t border-indigo-700/50 bg-indigo-950/50 -mx-6 -mb-6 p-6 rounded-b-2xl flex items-center justify-between">
-        <div>
-          <span className="text-xs text-indigo-300 font-semibold uppercase tracking-wider block">
-            Total Repayment
-          </span>
-          <span className="text-2xl font-black text-white tracking-tight">
-            {formatCurrency(details.totalRepayment)}
-          </span>
-        </div>
+      <div className="flex justify-between">
+        <dt className="text-slate-500">Tenure (T)</dt>
+        <dd className="font-medium text-slate-900">{details.tenureDays} days</dd>
       </div>
+      <div className="flex justify-between border-t border-slate-100 pt-3">
+        <dt className="text-slate-500">Simple interest</dt>
+        <dd className="font-medium tabular-nums text-slate-900" aria-live="polite">
+          {formatCurrency(details.simpleInterest)}
+        </dd>
+      </div>
+    </dl>
+    <div className="mt-4 flex items-baseline justify-between rounded-lg bg-brand-50 px-4 py-3">
+      <span className="text-sm font-medium text-brand-900">Total repayment</span>
+      <span className="text-xl font-semibold tabular-nums text-brand-900" aria-live="polite">
+        {formatCurrency(details.totalRepayment)}
+      </span>
     </div>
-  );
-};
+    <p className="mt-3 text-xs text-slate-500">
+      SI = (P × R × T) / (365 × 100). Figures are re-calculated by our server when you apply.
+    </p>
+  </section>
+);

@@ -1,3 +1,5 @@
+import { LOAN_CONFIG } from './loanConfig';
+
 export interface CalculationResult {
   amount: number;
   tenureDays: number;
@@ -6,21 +8,23 @@ export interface CalculationResult {
   totalRepayment: number;
 }
 
-export function roundToTwoDecimals(val: number): number {
-  return Math.round((val + Number.EPSILON) * 100) / 100;
-}
-
+/**
+ * Live preview of SI = (P × R × T) / (365 × 100), computed in integer paise exactly like
+ * the server so the figures shown match what the server stores.
+ */
 export function calculateLoanDetails(amount: number, tenureDays: number): CalculationResult {
-  const rate = 12; // 12% p.a.
-  const rawInterest = (amount * rate * tenureDays) / (365 * 100);
-  const simpleInterest = roundToTwoDecimals(rawInterest);
-  const totalRepayment = roundToTwoDecimals(amount + simpleInterest);
-
+  const rate = LOAN_CONFIG.INTEREST_RATE_PER_ANNUM;
+  const principalPaise = Math.round(amount * 100);
+  const interestPaise = Math.round((principalPaise * rate * tenureDays) / (365 * 100));
   return {
-    amount,
+    amount: principalPaise / 100,
     tenureDays,
     interestRate: rate,
-    simpleInterest,
-    totalRepayment,
+    simpleInterest: interestPaise / 100,
+    totalRepayment: (principalPaise + interestPaise) / 100,
   };
+}
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

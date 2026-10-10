@@ -1,49 +1,37 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Navbar } from '../../../components/layout/Navbar';
+import { ArrowLeft } from 'lucide-react';
 import { Stepper } from '../../../components/ui/Stepper';
-import { Footer } from '../../../components/layout/Footer';
+
+const STEPS = ['Personal details', 'Salary slip', 'Loan terms'];
+
+function stepFor(pathname: string): number {
+  if (pathname.includes('/salary-slip')) return 2;
+  if (pathname.includes('/loan-config')) return 3;
+  return 1;
+}
 
 export default function ApplyLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
-  const steps = [
-    { id: 1, name: 'Personal Details' },
-    { id: 2, name: 'Salary Slip' },
-    { id: 3, name: 'Loan Config' },
-  ];
-
-  let currentStep = 1;
-  if (pathname.includes('/salary-slip')) {
-    currentStep = 2;
-  } else if (pathname.includes('/loan-config')) {
-    currentStep = 3;
-  }
-
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50">
-      <Navbar />
-
-      <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-8">
-        <div className="bg-white rounded-3xl p-6 sm:p-10 border border-gray-100 shadow-xl space-y-8">
+    <div className="space-y-6">
+      <Link href="/my-loans" className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900">
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> My loans
+      </Link>
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="space-y-5 border-b border-slate-200 p-5 sm:p-8">
           <div>
-            <h1 className="text-2xl font-black text-gray-900 tracking-tight">
-              Personal Loan Application
-            </h1>
-            <p className="text-sm text-gray-500 mt-1">
-              Complete all steps to submit your application for instant underwriting review.
-            </p>
+            <h1 className="text-xl font-semibold text-slate-900 sm:text-2xl">Personal loan application</h1>
+            <p className="mt-1 text-sm text-slate-500">Your progress is saved after each step, so you can come back later.</p>
           </div>
-
-          <Stepper steps={steps} currentStep={currentStep} />
-
-          <div>{children}</div>
+          <Stepper steps={STEPS} currentStep={stepFor(pathname)} />
         </div>
-      </main>
-
-      <Footer />
+        <div className="p-5 sm:p-8">{children}</div>
+      </div>
     </div>
   );
 }

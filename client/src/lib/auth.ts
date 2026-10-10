@@ -3,29 +3,42 @@ import { User } from '../types';
 const TOKEN_KEY = 'lms_token';
 const USER_KEY = 'lms_user';
 
+// The JWT is kept in localStorage and sent as a Bearer header (the API is a separate origin
+// and uses no cookies, so CSRF does not apply). The cached user only speeds up first paint;
+// it is always re-validated against GET /auth/me, and the server re-checks role on every call.
+
+function safeStorage(): Storage | null {
+  try {
+    return typeof window === 'undefined' ? null : window.localStorage;
+  } catch {
+    return null; // storage disabled (privacy mode, blocked site data)
+  }
+}
+
 export function getStoredToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(TOKEN_KEY);
+  return safeStorage()?.getItem(TOKEN_KEY) ?? null;
 }
 
 export function setStoredToken(token: string): void {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(TOKEN_KEY, token);
+  safeStorage()?.setItem(TOKEN_KEY, token);
 }
 
 export function removeStoredToken(): void {
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
+  const storage = safeStorage();
+  storage?.removeItem(TOKEN_KEY);
+  storage?.removeItem(USER_KEY);
 }
 
 export function getStoredUser(): User | null {
-  if (typeof window === 'undefined') return null;
-  const data = localStorage.getItem(USER_KEY);
-  return data ? JSON.parse(data) : null;
+  const raw = safeStorage()?.getItem(USER_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as User;
+  } catch {
+    return null;
+  }
 }
 
 export function setStoredUser(user: User): void {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  safeStorage()?.setItem(USER_KEY, JSON.stringify(user));
 }
