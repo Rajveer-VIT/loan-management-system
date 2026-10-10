@@ -6,9 +6,12 @@ const startServer = async () => {
   await connectDB();
 
   app.listen(env.PORT, () => {
-    console.log(`🚀 LMS Server running in ${env.NODE_ENV} mode on port ${env.PORT}`);
-    console.log(`🔗 Health Check: http://localhost:${env.PORT}/health`);
+    console.log(`LMS server running in ${env.NODE_ENV} mode on port ${env.PORT}`);
+    console.log(`Health check: http://localhost:${env.PORT}/health`);
   });
 };
 
-startServer();
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

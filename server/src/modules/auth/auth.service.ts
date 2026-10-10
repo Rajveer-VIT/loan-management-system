@@ -5,86 +5,63 @@ import { AppError } from '../../utils/AppError.js';
 import { signToken } from '../../utils/jwt.js';
 import { SignupInput, LoginInput } from './auth.schema.js';
 
+export const BCRYPT_ROUNDS = 10;
+
+// Compared against when the email is unknown, so a failed login takes the same time
+// whether or not the account exists (no user enumeration by timing).
+const DUMMY_HASH = bcrypt.hashSync('timing-equaliser-not-a-real-password', BCRYPT_ROUNDS);
+
+function toPublicUser(user: IUser) {
+  return {
+    id: user._id.toString(),
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    createdAt: user.createdAt,
+  };
+}
+
+function issueSession(user: IUser) {
+  const token = signToken({ id: user._id.toString(), email: user.email, role: user.role, name: user.name });
+  return { user: toPublicUser(user), token };
+}
+
 export class AuthService {
+  /** Public sign-up always creates a BORROWER; any `role` sent by the client is ignored. */
   static async registerBorrower(input: SignupInput) {
-    const existingUser = await User.findOne({ email: input.email.toLowerCase() });
-    if (existingUser) {
-      throw new AppError('An account with this email already exists', 409);
+    if (await User.exists({ email: input.email })) {
+      throw new AppError('An account with this email already exists', 409, undefined, 'DUPLICATE_EMAIL');
     }
 
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(input.password, salt);
-
-    // Force role to BORROWER for public signups (prevents privilege escalation)
-    const newUser = await User.create({
+    const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
+    // A concurrent sign-up with the same email hits the unique index → 409 via the error handler.
+    const user = await User.create({
       name: input.name,
-      email: input.email.toLowerCase(),
+      email: input.email,
       passwordHash,
       role: ROLES.BORROWER,
       isActive: true,
     });
 
-    const token = signToken({
-      id: newUser._id.toString(),
-      email: newUser.email,
-      role: newUser.role,
-      name: newUser.name,
-    });
-
-    return {
-      user: {
-        id: newUser._id.toString(),
-        name: newUser.name,
-        email: newUser.email,
-        role: newUser.role,
-        createdAt: newUser.createdAt,
-      },
-      token,
-    };
+    return issueSession(user);
   }
 
   static async login(input: LoginInput) {
-    const user = await User.findOne({ email: input.email.toLowerCase() }).select('+passwordHash');
-    if (!user || !user.isActive) {
-      throw new AppError('Invalid email or password', 401);
+    const user = await User.findOne({ email: input.email }).select('+passwordHash');
+    const isMatch = await bcrypt.compare(input.password, user?.passwordHash ?? DUMMY_HASH);
+
+    if (!user || !isMatch || !user.isActive) {
+      throw new AppError('Invalid email or password', 401, undefined, 'INVALID_CREDENTIALS');
     }
 
-    const isMatch = await bcrypt.compare(input.password, user.passwordHash);
-    if (!isMatch) {
-      throw new AppError('Invalid email or password', 401);
-    }
-
-    const token = signToken({
-      id: user._id.toString(),
-      email: user.email,
-      role: user.role,
-      name: user.name,
-    });
-
-    return {
-      user: {
-        id: user._id.toString(),
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        createdAt: user.createdAt,
-      },
-      token,
-    };
+    return issueSession(user);
   }
 
   static async getCurrentUser(userId: string) {
     const user = await User.findById(userId);
     if (!user || !user.isActive) {
-      throw new AppError('User not found or inactive', 404);
+      throw new AppError('Account not found or inactive', 401, undefined, 'INVALID_TOKEN');
     }
-
-    return {
-      id: user._id.toString(),
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      createdAt: user.createdAt,
-    };
+    return toPublicUser(user);
   }
 }

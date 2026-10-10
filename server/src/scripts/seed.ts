@@ -1,282 +1,251 @@
+/**
+ * Idempotent seed script: `npm run seed`
+ *
+ * - Upserts one account per role with the documented credentials (re-running resets
+ *   those passwords to the known values).
+ * - Creates demo borrowers and, only for a demo borrower that has no loans yet, one demo
+ *   loan in a given lifecycle stage. Existing loans and payments are never modified or
+ *   deleted, so re-running is safe.
+ * - Refuses to run with NODE_ENV=production unless `--allow-production` is passed.
+ */
+import fs from 'fs';
+import path from 'path';
 import bcrypt from 'bcryptjs';
+import mongoose from 'mongoose';
+import { env } from '../config/env.js';
 import { connectDB } from '../config/db.js';
-import { User } from '../models/User.model.js';
-import { Loan } from '../models/Loan.model.js';
+import { User, IUser } from '../models/User.model.js';
+import { Loan, ILoan } from '../models/Loan.model.js';
 import { Payment } from '../models/Payment.model.js';
 import { ROLES } from '../constants/roles.js';
 import { LOAN_STATUS } from '../constants/loanStatus.js';
 import { EMPLOYMENT_MODE } from '../constants/loanConfig.js';
 import { calculateLoanDetails, roundMoney } from '../services/loanCalculator.js';
-import mongoose from 'mongoose';
+import { historyEntry } from '../services/loanHistory.js';
+import { uploadDir } from '../middleware/upload.js';
+import { BCRYPT_ROUNDS } from '../modules/auth/auth.service.js';
 
-const defaultUsers = [
+export const SEED_ACCOUNTS = [
   { name: 'System Admin', email: 'admin@lms.com', password: 'Admin@123', role: ROLES.ADMIN },
   { name: 'Sales Executive', email: 'sales@lms.com', password: 'Sales@123', role: ROLES.SALES },
   { name: 'Sanction Officer', email: 'sanction@lms.com', password: 'Sanction@123', role: ROLES.SANCTION },
   { name: 'Disbursement Manager', email: 'disbursement@lms.com', password: 'Disburse@123', role: ROLES.DISBURSEMENT },
   { name: 'Collection Agent', email: 'collection@lms.com', password: 'Collect@123', role: ROLES.COLLECTION },
   { name: 'Primary Borrower', email: 'borrower@lms.com', password: 'Borrower@123', role: ROLES.BORROWER },
+] as const;
+
+const DEMO_BORROWER_PASSWORD = 'Borrower@123';
+const DEMO_SLIP_NAME = 'demo-salary-slip.pdf';
+// File name referenced by demo loans created by an earlier version of this script.
+const LEGACY_DEMO_SLIP_NAME = 'demo_salary_slip.pdf';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+type DemoStage = 'REGISTERED' | 'PROFILE_SAVED' | 'SLIP_UPLOADED' | 'APPLIED' | 'SANCTIONED' | 'DISBURSED' | 'CLOSED' | 'REJECTED';
+
+const DEMO_BORROWERS: Array<{ name: string; email: string; pan: string; stage: DemoStage }> = [
+  { name: 'Ananya Roy', email: 'ananya.roy@example.com', pan: 'ANANR1234A', stage: 'REGISTERED' },
+  { name: 'Neha Iyer', email: 'neha.iyer@example.com', pan: 'NEHAI4321N', stage: 'PROFILE_SAVED' },
+  { name: 'Arjun Nair', email: 'arjun.nair@example.com', pan: 'ARJUN6789N', stage: 'SLIP_UPLOADED' },
+  { name: 'Amit Verma', email: 'amit.verma@example.com', pan: 'AMITV5432P', stage: 'APPLIED' },
+  { name: 'Priya Sharma', email: 'priya.sharma@example.com', pan: 'PRIYA2345S', stage: 'APPLIED' },
+  { name: 'Vikram Mehta', email: 'vikram.mehta@example.com', pan: 'VIKRM9876M', stage: 'SANCTIONED' },
+  { name: 'Sneha Patel', email: 'sneha.patel@example.com', pan: 'SNEHA1234K', stage: 'DISBURSED' },
+  { name: 'Rohan Gupta', email: 'rohan.gupta@example.com', pan: 'ROHAN5432G', stage: 'CLOSED' },
+  { name: 'Karan Kapoor', email: 'karan.kapoor@example.com', pan: 'KARAN9876R', stage: 'REJECTED' },
 ];
 
-const demoBorrowers = [
-  { name: 'Ananya Roy', email: 'ananya.roy@example.com', stage: 'REGISTERED' },
-  { name: 'Vikram Mehta', email: 'vikram.mehta@example.com', stage: 'SANCTIONED' },
-  { name: 'Sneha Patel', email: 'sneha.patel@example.com', stage: 'DISBURSED' },
-  { name: 'Amit Verma', email: 'amit.verma@example.com', stage: 'APPLIED' },
-  { name: 'Priya Sharma', email: 'priya.sharma@example.com', stage: 'APPLIED' },
-  { name: 'Rohan Gupta', email: 'rohan.gupta@example.com', stage: 'CLOSED' },
-  { name: 'Karan Kapoor', email: 'karan.kapoor@example.com', stage: 'REJECTED' },
-];
+/** A tiny but valid one-page PDF so "View slip" works for seeded loans. */
+function ensureDemoSlipFile(): number {
+  const target = path.join(uploadDir, DEMO_SLIP_NAME);
+  const legacyTarget = path.join(uploadDir, LEGACY_DEMO_SLIP_NAME);
+  if (!fs.existsSync(target)) {
+    const pdf = [
+      '%PDF-1.4',
+      '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+      '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+      '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 420 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj',
+      '4 0 obj << /Length 64 >> stream',
+      'BT /F1 16 Tf 40 110 Td (Demo salary slip - seed data only) Tj ET',
+      'endstream endobj',
+      '5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
+      'trailer << /Root 1 0 R >>',
+      '%%EOF',
+    ].join('\n');
+    fs.writeFileSync(target, pdf);
+  }
+  if (!fs.existsSync(legacyTarget)) fs.copyFileSync(target, legacyTarget);
+  return fs.statSync(target).size;
+}
 
-async function seed() {
-  console.log('🌱 Starting Idempotent Database Seeding...');
-  await connectDB();
+async function upsertUser(name: string, email: string, password: string, role: ROLES): Promise<IUser> {
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+  const user = await User.findOneAndUpdate(
+    { email },
+    { $set: { name, email, passwordHash, role, isActive: true } },
+    { upsert: true, new: true, runValidators: true }
+  );
+  return user!;
+}
 
-  const salt = await bcrypt.genSalt(10);
+interface Staff {
+  sanction: IUser;
+  disbursement: IUser;
+  collection: IUser;
+}
 
-  // 1. Seed core staff & primary borrower accounts
-  console.log('👤 Seeding Core Role Accounts...');
-  const seededUsers: Record<string, any> = {};
-  for (const u of defaultUsers) {
-    const passwordHash = await bcrypt.hash(u.password, salt);
-    const user = await User.findOneAndUpdate(
-      { email: u.email },
-      {
-        $set: {
-          name: u.name,
-          email: u.email,
-          passwordHash,
-          role: u.role,
-          isActive: true,
-        },
-      },
-      { upsert: true, new: true }
-    );
-    seededUsers[u.email] = user;
+function buildDemoLoan(borrower: IUser, pan: string, stage: DemoStage, slipSize: number, staff: Staff): Partial<ILoan> | null {
+  if (stage === 'REGISTERED') return null;
+
+  const now = Date.now();
+  const borrowerId = borrower._id.toString();
+  const personalDetails = {
+    fullName: borrower.name,
+    pan,
+    dob: new Date(Date.UTC(1992, 5, 15)),
+    monthlySalary: 65000,
+    employmentMode: EMPLOYMENT_MODE.SALARIED,
+  };
+  const salarySlip = {
+    originalName: 'salary-slip.pdf',
+    storedName: DEMO_SLIP_NAME,
+    mimeType: 'application/pdf',
+    size: slipSize,
+    uploadedAt: new Date(now - 6 * DAY_MS),
+  };
+  const draftEntry = historyEntry(LOAN_STATUS.DRAFT, borrowerId, 'Eligibility check passed', new Date(now - 7 * DAY_MS));
+
+  if (stage === 'PROFILE_SAVED') {
+    return { borrower: borrower._id, personalDetails, status: LOAN_STATUS.DRAFT, statusHistory: [draftEntry] };
+  }
+  if (stage === 'SLIP_UPLOADED') {
+    return { borrower: borrower._id, personalDetails, salarySlip, status: LOAN_STATUS.DRAFT, statusHistory: [draftEntry] };
   }
 
-  const sanctionUser = seededUsers['sanction@lms.com'];
-  const disburseUser = seededUsers['disbursement@lms.com'];
-  const collectUser = seededUsers['collection@lms.com'];
+  const terms = calculateLoanDetails(stage === 'CLOSED' ? 50000 : 150000, stage === 'CLOSED' ? 90 : 180);
+  const appliedAt = new Date(now - 5 * DAY_MS);
+  const base: Partial<ILoan> = {
+    borrower: borrower._id,
+    personalDetails,
+    salarySlip,
+    ...terms,
+    totalPaid: 0,
+    outstandingBalance: terms.totalRepayment,
+    status: LOAN_STATUS.APPLIED,
+    appliedAt,
+    statusHistory: [draftEntry, historyEntry(LOAN_STATUS.APPLIED, borrowerId, undefined, appliedAt)],
+  };
+  if (stage === 'APPLIED') return base;
 
-  // 2. Seed demo borrower accounts and loan lifecycle states
-  console.log('📊 Seeding Demo Borrower Funnel & Lifecycle Loans...');
-  for (const b of demoBorrowers) {
-    const passwordHash = await bcrypt.hash('Borrower@123', salt);
-    const user = await User.findOneAndUpdate(
-      { email: b.email },
-      {
-        $set: {
-          name: b.name,
-          email: b.email,
-          passwordHash,
-          role: ROLES.BORROWER,
-          isActive: true,
-        },
-      },
-      { upsert: true, new: true }
-    );
+  if (stage === 'REJECTED') {
+    const rejectedAt = new Date(now - 4 * DAY_MS);
+    const reason = 'Salary credits in bank statement do not match the declared income.';
+    return {
+      ...base,
+      status: LOAN_STATUS.REJECTED,
+      rejectionReason: reason,
+      rejectedBy: staff.sanction._id,
+      rejectedAt,
+      statusHistory: [...base.statusHistory!, historyEntry(LOAN_STATUS.REJECTED, staff.sanction._id.toString(), reason, rejectedAt)],
+    };
+  }
 
-    if (b.stage === 'APPLIED') {
-      const math = calculateLoanDetails(100000, 180);
-      await Loan.findOneAndUpdate(
-        { borrower: user._id },
-        {
-          $set: {
-            borrower: user._id,
-            personalDetails: {
-              fullName: b.name,
-              pan: 'AMITV5432P',
-              dob: new Date('1994-06-15'),
-              monthlySalary: 65000,
-              employmentMode: EMPLOYMENT_MODE.SALARIED,
-            },
-            salarySlip: {
-              originalName: 'salary_slip.pdf',
-              storedName: 'demo_salary_slip.pdf',
-              path: 'uploads/demo_salary_slip.pdf',
-              mimeType: 'application/pdf',
-              size: 250000,
-            },
-            amount: math.amount,
-            tenureDays: math.tenureDays,
-            interestRate: math.interestRate,
-            simpleInterest: math.simpleInterest,
-            totalRepayment: math.totalRepayment,
-            totalPaid: 0,
-            outstandingBalance: math.totalRepayment,
-            status: LOAN_STATUS.APPLIED,
-          },
-        },
-        { upsert: true }
-      );
-    } else if (b.stage === 'SANCTIONED') {
-      const math = calculateLoanDetails(150000, 180);
-      await Loan.findOneAndUpdate(
-        { borrower: user._id },
-        {
-          $set: {
-            borrower: user._id,
-            personalDetails: {
-              fullName: b.name,
-              pan: 'VIKRM9876M',
-              dob: new Date('1992-08-20'),
-              monthlySalary: 75000,
-              employmentMode: EMPLOYMENT_MODE.SALARIED,
-            },
-            salarySlip: {
-              originalName: 'vikram_slip.pdf',
-              storedName: 'demo_salary_slip.pdf',
-              path: 'uploads/demo_salary_slip.pdf',
-              mimeType: 'application/pdf',
-              size: 280000,
-            },
-            amount: math.amount,
-            tenureDays: math.tenureDays,
-            interestRate: math.interestRate,
-            simpleInterest: math.simpleInterest,
-            totalRepayment: math.totalRepayment,
-            totalPaid: 0,
-            outstandingBalance: math.totalRepayment,
-            status: LOAN_STATUS.SANCTIONED,
-            sanctionedBy: sanctionUser._id,
-            sanctionedAt: new Date(Date.now() - 86400000),
-          },
-        },
-        { upsert: true }
-      );
-    } else if (b.stage === 'DISBURSED') {
-      const math = calculateLoanDetails(200000, 365);
-      const partialPaid = 50000;
-      const loan = await Loan.findOneAndUpdate(
-        { borrower: user._id },
-        {
-          $set: {
-            borrower: user._id,
-            personalDetails: {
-              fullName: b.name,
-              pan: 'SNEHA1234K',
-              dob: new Date('1990-11-10'),
-              monthlySalary: 85000,
-              employmentMode: EMPLOYMENT_MODE.SALARIED,
-            },
-            salarySlip: {
-              originalName: 'sneha_slip.pdf',
-              storedName: 'demo_salary_slip.pdf',
-              path: 'uploads/demo_salary_slip.pdf',
-              mimeType: 'application/pdf',
-              size: 300000,
-            },
-            amount: math.amount,
-            tenureDays: math.tenureDays,
-            interestRate: math.interestRate,
-            simpleInterest: math.simpleInterest,
-            totalRepayment: math.totalRepayment,
-            totalPaid: partialPaid,
-            outstandingBalance: roundMoney(math.totalRepayment - partialPaid),
-            status: LOAN_STATUS.DISBURSED,
-            sanctionedBy: sanctionUser._id,
-            sanctionedAt: new Date(Date.now() - 172800000),
-            disbursedBy: disburseUser._id,
-            disbursedAt: new Date(Date.now() - 86400000),
-          },
-        },
-        { upsert: true, new: true }
-      );
+  const sanctionedAt = new Date(now - 4 * DAY_MS);
+  const sanctioned: Partial<ILoan> = {
+    ...base,
+    status: LOAN_STATUS.SANCTIONED,
+    sanctionedBy: staff.sanction._id,
+    sanctionedAt,
+    statusHistory: [...base.statusHistory!, historyEntry(LOAN_STATUS.SANCTIONED, staff.sanction._id.toString(), undefined, sanctionedAt)],
+  };
+  if (stage === 'SANCTIONED') return sanctioned;
 
-      // Seed partial payment record
-      await Payment.findOneAndUpdate(
-        { utrNumber: 'UTRSEEDPARTIAL100' },
-        {
-          $set: {
-            loan: loan._id,
-            utrNumber: 'UTRSEEDPARTIAL100',
-            amount: partialPaid,
-            paymentDate: new Date(Date.now() - 43200000),
-            recordedBy: collectUser._id,
-          },
-        },
-        { upsert: true }
-      );
-    } else if (b.stage === 'CLOSED') {
-      const math = calculateLoanDetails(50000, 90);
-      const loan = await Loan.findOneAndUpdate(
-        { borrower: user._id },
-        {
-          $set: {
-            borrower: user._id,
-            personalDetails: {
-              fullName: b.name,
-              pan: 'ROHAN5432G',
-              dob: new Date('1993-02-14'),
-              monthlySalary: 60000,
-              employmentMode: EMPLOYMENT_MODE.SALARIED,
-            },
-            amount: math.amount,
-            tenureDays: math.tenureDays,
-            interestRate: math.interestRate,
-            simpleInterest: math.simpleInterest,
-            totalRepayment: math.totalRepayment,
-            totalPaid: math.totalRepayment,
-            outstandingBalance: 0,
-            status: LOAN_STATUS.CLOSED,
-            sanctionedBy: sanctionUser._id,
-            disbursedBy: disburseUser._id,
-            closedAt: new Date(Date.now() - 86400000),
-          },
-        },
-        { upsert: true, new: true }
-      );
+  const disbursedAt = new Date(now - 3 * DAY_MS);
+  const disbursed: Partial<ILoan> = {
+    ...sanctioned,
+    status: LOAN_STATUS.DISBURSED,
+    disbursedBy: staff.disbursement._id,
+    disbursedAt,
+    statusHistory: [...sanctioned.statusHistory!, historyEntry(LOAN_STATUS.DISBURSED, staff.disbursement._id.toString(), undefined, disbursedAt)],
+  };
+  if (stage === 'DISBURSED') return disbursed;
 
-      // Seed full payment record
-      await Payment.findOneAndUpdate(
-        { utrNumber: 'UTRSEEDCLOSED999' },
-        {
-          $set: {
-            loan: loan._id,
-            utrNumber: 'UTRSEEDCLOSED999',
-            amount: math.totalRepayment,
-            paymentDate: new Date(Date.now() - 86400000),
-            recordedBy: collectUser._id,
-          },
-        },
-        { upsert: true }
-      );
-    } else if (b.stage === 'REJECTED') {
-      await Loan.findOneAndUpdate(
-        { borrower: user._id },
-        {
-          $set: {
-            borrower: user._id,
-            personalDetails: {
-              fullName: b.name,
-              pan: 'KARAN9876R',
-              dob: new Date('1996-09-25'),
-              monthlySalary: 30000,
-              employmentMode: EMPLOYMENT_MODE.SELF_EMPLOYED,
-            },
-            status: LOAN_STATUS.REJECTED,
-            rejectionReason: 'Bank statement salary credits mismatched claimed net income.',
-          },
-        },
-        { upsert: true }
-      );
+  const closedAt = new Date(now - 1 * DAY_MS);
+  return {
+    ...disbursed,
+    status: LOAN_STATUS.CLOSED,
+    totalPaid: terms.totalRepayment,
+    outstandingBalance: 0,
+    closedAt,
+    statusHistory: [
+      ...disbursed.statusHistory!,
+      historyEntry(LOAN_STATUS.CLOSED, staff.collection._id.toString(), 'Auto-closed on full repayment (UTR SEEDCLOSED0001)', closedAt),
+    ],
+  };
+}
+
+async function seed() {
+  if (env.NODE_ENV === 'production' && !process.argv.includes('--allow-production')) {
+    console.error('Refusing to seed demo accounts with NODE_ENV=production (pass --allow-production to override).');
+    process.exit(1);
+  }
+
+  await connectDB();
+  const slipSize = ensureDemoSlipFile();
+
+  const accounts: Partial<Record<ROLES, IUser>> = {};
+  for (const account of SEED_ACCOUNTS) {
+    accounts[account.role] = await upsertUser(account.name, account.email, account.password, account.role);
+  }
+  const staff: Staff = {
+    sanction: accounts[ROLES.SANCTION]!,
+    disbursement: accounts[ROLES.DISBURSEMENT]!,
+    collection: accounts[ROLES.COLLECTION]!,
+  };
+
+  let createdLoans = 0;
+  for (const demo of DEMO_BORROWERS) {
+    const borrower = await upsertUser(demo.name, demo.email, DEMO_BORROWER_PASSWORD, ROLES.BORROWER);
+    if (await Loan.exists({ borrower: borrower._id })) continue; // never touch existing loans
+
+    const loanData = buildDemoLoan(borrower, demo.pan, demo.stage, slipSize, staff);
+    if (!loanData) continue;
+
+    const loan = await Loan.create(loanData);
+    createdLoans++;
+
+    // Payments for the repayment-stage demos (UTRs are unique; skip if already present).
+    const payments =
+      demo.stage === 'DISBURSED'
+        ? [{ utr: 'SEEDPARTIAL0001', amount: 50000 }]
+        : demo.stage === 'CLOSED'
+          ? [{ utr: 'SEEDCLOSED0001', amount: loan.totalRepayment }]
+          : [];
+    for (const p of payments) {
+      if (await Payment.exists({ utrNumber: p.utr })) continue;
+      await Payment.create({
+        loan: loan._id,
+        utrNumber: p.utr,
+        amount: p.amount,
+        paymentDate: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate() - 2)),
+        recordedBy: staff.collection._id,
+      });
+      if (demo.stage === 'DISBURSED') {
+        loan.totalPaid = roundMoney(loan.totalPaid + p.amount);
+        loan.outstandingBalance = roundMoney(loan.totalRepayment - loan.totalPaid);
+        await loan.save();
+      }
     }
   }
 
-  console.log('\n======================================================================');
-  console.log('✅ IDEMPOTENT SEEDING COMPLETE! PRE-CONFIGURED ACCOUNTS & DEMO DATA');
-  console.log('======================================================================');
-  defaultUsers.forEach((u) => {
-    console.log(`Role: ${u.role.padEnd(12)} | Email: ${u.email.padEnd(24)} | Password: ${u.password}`);
-  });
-  console.log('======================================================================\n');
-
-  await mongoose.disconnect();
-  process.exit(0);
+  console.log(`\nSeed complete (${createdLoans} demo loan(s) created; existing loans left untouched).\n`);
+  console.table(SEED_ACCOUNTS.map(({ role, email, password }) => ({ role, email, password })));
+  console.log(`Demo borrowers (${DEMO_BORROWERS.length}) use password: ${DEMO_BORROWER_PASSWORD}\n`);
 }
 
-seed().catch((err) => {
-  console.error('❌ Seeding failed:', err);
-  process.exit(1);
-});
+seed()
+  .then(() => mongoose.disconnect())
+  .catch(async (err) => {
+    console.error('Seeding failed:', err);
+    await mongoose.disconnect().catch(() => undefined);
+    process.exit(1);
+  });

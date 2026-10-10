@@ -8,8 +8,10 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "seed": "tsx src/scripts/seed.ts",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run --exclude \"src/__tests__/integration/**\"",
+    "typecheck": "tsc --noEmit",
+    "test:integration": "vitest run src/__tests__/integration",
+    "test:all": "vitest run"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

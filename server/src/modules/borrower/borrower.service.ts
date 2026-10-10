@@ -1,227 +1,240 @@
-import { Loan as LoanModel, ILoan } from '../../models/Loan.model.js';
-import { Payment as PaymentModel } from '../../models/Payment.model.js';
-import { evaluateBRE } from '../../services/bre.service.js';
+import mongoose from 'mongoose';
+import { Loan, ILoan, ISalarySlip } from '../../models/Loan.model.js';
+import { Payment } from '../../models/Payment.model.js';
+import { evaluateBRE, normalizePan } from '../../services/bre.service.js';
 import { calculateLoanDetails } from '../../services/loanCalculator.js';
-import { LOAN_STATUS, isValidStatusTransition } from '../../constants/loanStatus.js';
+import { LOAN_STATUS, OPEN_LOAN_STATUSES } from '../../constants/loanStatus.js';
 import { AppError } from '../../utils/AppError.js';
+import { calendarDateToUtc, parseCalendarDate } from '../../utils/dates.js';
+import { removeUploadedFile, sniffUploadedFile } from '../../middleware/upload.js';
+import { historyEntry } from '../../services/loanHistory.js';
 import { SaveProfileInput, ApplyLoanInput } from './borrower.schema.js';
 
+export type ApplicationStep = 'personal' | 'salary-slip' | 'loan-config';
+
+function deriveStep(loan: ILoan | null): ApplicationStep {
+  if (!loan?.personalDetails?.fullName) return 'personal';
+  if (!loan.salarySlip?.storedName) return 'salary-slip';
+  return 'loan-config';
+}
+
+function isDuplicateKey(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 11000;
+}
+
+async function assertNoOpenLoan(borrowerId: string, exceptLoanId?: string): Promise<void> {
+  const filter: mongoose.FilterQuery<ILoan> = { borrower: borrowerId, status: { $in: OPEN_LOAN_STATUSES } };
+  if (exceptLoanId) filter._id = { $ne: exceptLoanId };
+  if (await Loan.exists(filter)) {
+    throw new AppError(
+      'You already have an active loan application. Only one active loan is permitted at a time.',
+      409,
+      undefined,
+      'OPEN_LOAN_EXISTS'
+    );
+  }
+}
+
+function breRejection(failures: ReturnType<typeof evaluateBRE>['failures']): AppError {
+  return new AppError(
+    'Application rejected by the eligibility rules (BRE). Please review the reasons below.',
+    422,
+    failures,
+    'BRE_VALIDATION_FAILED'
+  );
+}
+
 export class BorrowerService {
-  /**
-   * Retrieves active DRAFT loan for borrower and derives currentStep.
-   */
+  /** The borrower's in-progress DRAFT (if any) and the wizard step it is on. */
   static async getDraftLoan(borrowerId: string) {
-    const draftLoan = await LoanModel.findOne({
-      borrower: borrowerId,
-      status: LOAN_STATUS.DRAFT,
-    });
-
-    if (!draftLoan) {
-      return {
-        draftLoan: null,
-        currentStep: 'personal',
-      };
-    }
-
-    let currentStep: 'personal' | 'salary-slip' | 'loan-config' | 'done' = 'personal';
-
-    if (draftLoan.personalDetails && draftLoan.personalDetails.fullName) {
-      if (draftLoan.salarySlip && draftLoan.salarySlip.path) {
-        currentStep = 'loan-config';
-      } else {
-        currentStep = 'salary-slip';
-      }
-    }
-
-    return {
-      draftLoan,
-      currentStep,
-    };
+    const draftLoan = await Loan.findOne({ borrower: borrowerId, status: LOAN_STATUS.DRAFT });
+    return { draftLoan, currentStep: deriveStep(draftLoan) };
   }
 
   /**
-   * Saves personal details after running BRE check on the server.
-   * Idempotent upsert: if DRAFT exists, updates it.
-   * Throws 409 if an active non-draft loan exists.
+   * Step 2: runs the BRE on the server and, only if every rule passes, saves the
+   * personal details onto the borrower's single DRAFT loan (creating it if needed).
    */
   static async saveProfileAndRunBRE(borrowerId: string, input: SaveProfileInput) {
-    // Check if there is an active open non-draft loan (APPLIED, SANCTIONED, DISBURSED)
-    const activeLoan = await LoanModel.findOne({
-      borrower: borrowerId,
-      status: { $in: [LOAN_STATUS.APPLIED, LOAN_STATUS.SANCTIONED, LOAN_STATUS.DISBURSED] },
-    });
+    await assertNoOpenLoan(borrowerId);
 
-    if (activeLoan) {
-      throw new AppError(
-        'Only one active loan application is permitted at a time.',
-        409,
-        undefined,
-        'OPEN_LOAN_EXISTS'
-      );
-    }
+    const breResult = evaluateBRE(input);
+    if (!breResult.eligible) throw breRejection(breResult.failures);
 
-    // Run BRE check
-    const breResult = evaluateBRE({
+    // BRE passed, so the date parses; it is stored as a UTC-midnight calendar date.
+    const dob = calendarDateToUtc(parseCalendarDate(input.dob)!);
+    const personalDetails = {
       fullName: input.fullName,
-      pan: input.pan,
-      dob: input.dob,
+      pan: normalizePan(input.pan),
+      dob,
       monthlySalary: input.monthlySalary,
       employmentMode: input.employmentMode,
-    });
-
-    if (!breResult.eligible) {
-      throw new AppError(
-        'Loan application rejected by Business Rule Engine (BRE)',
-        422,
-        breResult.failures,
-        'BRE_VALIDATION_FAILED'
-      );
-    }
-
-    const panUpper = input.pan.trim().toUpperCase();
-    const dobDate = new Date(input.dob);
-
-    let loan = await LoanModel.findOne({
-      borrower: borrowerId,
-      status: LOAN_STATUS.DRAFT,
-    });
-
-    if (loan) {
-      loan.personalDetails = {
-        fullName: input.fullName,
-        pan: panUpper,
-        dob: dobDate,
-        monthlySalary: input.monthlySalary,
-        employmentMode: input.employmentMode,
-      };
-      await loan.save();
-    } else {
-      loan = await LoanModel.create({
-        borrower: borrowerId,
-        personalDetails: {
-          fullName: input.fullName,
-          pan: panUpper,
-          dob: dobDate,
-          monthlySalary: input.monthlySalary,
-          employmentMode: input.employmentMode,
-        },
-        status: LOAN_STATUS.DRAFT,
-      });
-    }
-
-    return loan;
-  }
-
-  /**
-   * Attach salary slip metadata to draft loan.
-   * Enforces server step check: requires personalDetails to be saved first.
-   */
-  static async uploadSalarySlip(borrowerId: string, loanId: string, file: Express.Multer.File) {
-    const loan = await LoanModel.findOne({ _id: loanId, borrower: borrowerId });
-    if (!loan) {
-      throw new AppError('Loan application not found', 404);
-    }
-
-    if (loan.status !== LOAN_STATUS.DRAFT) {
-      throw new AppError('Cannot upload salary slip for loan that is already submitted', 409, undefined, 'INVALID_TRANSITION');
-    }
-
-    if (!loan.personalDetails || !loan.personalDetails.fullName) {
-      throw new AppError(
-        'Please complete personal details step before uploading salary slip.',
-        409,
-        undefined,
-        'INVALID_STEP'
-      );
-    }
-
-    loan.salarySlip = {
-      originalName: file.originalname,
-      storedName: file.filename,
-      path: file.path,
-      mimeType: file.mimetype,
-      size: file.size,
     };
 
-    await loan.save();
-    return loan;
+    const upsertDraft = () =>
+      Loan.findOneAndUpdate(
+        { borrower: borrowerId, status: LOAN_STATUS.DRAFT },
+        {
+          $set: { personalDetails },
+          $setOnInsert: { statusHistory: [historyEntry(LOAN_STATUS.DRAFT, borrowerId, 'Eligibility check passed')] },
+        },
+        { upsert: true, new: true, runValidators: true }
+      );
+
+    try {
+      return await upsertDraft();
+    } catch (err) {
+      // A concurrent request created the draft first (unique partial index); update that one.
+      if (isDuplicateKey(err)) return await upsertDraft();
+      throw err;
+    }
   }
 
   /**
-   * Configure loan terms and submit application (DRAFT -> APPLIED).
-   * Enforces server step check: requires personalDetails AND salarySlip.
+   * Step 3: attaches the uploaded salary slip to the borrower's DRAFT loan.
+   * The file is already on disk (multer), so every failure path deletes it, and a
+   * successful replacement deletes the superseded file.
+   */
+  static async uploadSalarySlip(borrowerId: string, loanId: string, file: Express.Multer.File) {
+    try {
+      const mimeType = await sniffUploadedFile(file.path, file.originalname);
+      if (!mimeType) {
+        throw new AppError(
+          'File content does not match a PDF, JPG or PNG document.',
+          400,
+          undefined,
+          'INVALID_FILE_CONTENT'
+        );
+      }
+
+      const salarySlip: ISalarySlip = {
+        // Keep a display name only; strip anything path-like or control characters.
+        originalName: file.originalname.replace(/[\\/\x00-\x1f\x7f"]/g, '_').slice(0, 150),
+        storedName: file.filename,
+        mimeType,
+        size: file.size,
+        uploadedAt: new Date(),
+      };
+
+      const previous = await Loan.findOneAndUpdate(
+        {
+          _id: loanId,
+          borrower: borrowerId,
+          status: LOAN_STATUS.DRAFT,
+          'personalDetails.fullName': { $exists: true },
+        },
+        { $set: { salarySlip } },
+        { new: false }
+      );
+
+      if (!previous) {
+        const loan = await Loan.findOne({ _id: loanId, borrower: borrowerId });
+        if (!loan) throw new AppError('Loan application not found', 404, undefined, 'NOT_FOUND');
+        if (loan.status !== LOAN_STATUS.DRAFT) {
+          throw new AppError(
+            'Cannot upload a salary slip for an application that has already been submitted.',
+            409,
+            undefined,
+            'INVALID_TRANSITION'
+          );
+        }
+        throw new AppError(
+          'Please complete the personal details step before uploading a salary slip.',
+          409,
+          undefined,
+          'INVALID_STEP'
+        );
+      }
+
+      if (previous.salarySlip?.storedName && previous.salarySlip.storedName !== file.filename) {
+        await removeUploadedFile(previous.salarySlip.storedName);
+      }
+
+      return await Loan.findById(loanId);
+    } catch (err) {
+      await removeUploadedFile(file.filename);
+      throw err;
+    }
+  }
+
+  /**
+   * Step 4: DRAFT → APPLIED. Re-runs the BRE on the stored details (defence in depth)
+   * and computes the financial terms on the server; client-sent figures are never used.
    */
   static async applyForLoan(borrowerId: string, loanId: string, input: ApplyLoanInput) {
-    const loan = await LoanModel.findOne({ _id: loanId, borrower: borrowerId });
-    if (!loan) {
-      throw new AppError('Loan application not found', 404);
+    const loan = await Loan.findOne({ _id: loanId, borrower: borrowerId });
+    if (!loan) throw new AppError('Loan application not found', 404, undefined, 'NOT_FOUND');
+
+    if (loan.status !== LOAN_STATUS.DRAFT) {
+      throw new AppError(
+        `This application has already been submitted (status: ${loan.status}).`,
+        409,
+        undefined,
+        'INVALID_TRANSITION'
+      );
     }
 
-    if (!loan.personalDetails || !loan.personalDetails.fullName) {
-      throw new AppError('Please complete personal details before submitting application', 409, undefined, 'INVALID_STEP');
+    const details = loan.personalDetails;
+    if (!details?.fullName) {
+      throw new AppError('Please complete personal details before submitting.', 409, undefined, 'INVALID_STEP');
+    }
+    if (!loan.salarySlip?.storedName) {
+      throw new AppError('Please upload your salary slip before submitting.', 409, undefined, 'INVALID_STEP');
     }
 
-    if (!loan.salarySlip || !loan.salarySlip.path) {
-      throw new AppError('Please upload salary slip before submitting application', 409, undefined, 'INVALID_STEP');
-    }
+    const breResult = evaluateBRE({
+      pan: details.pan,
+      dob: details.dob,
+      monthlySalary: details.monthlySalary,
+      employmentMode: details.employmentMode,
+    });
+    if (!breResult.eligible) throw breRejection(breResult.failures);
 
-    if (!isValidStatusTransition(loan.status, LOAN_STATUS.APPLIED)) {
-      throw new AppError(`Cannot submit loan from status '${loan.status}'`, 409, undefined, 'INVALID_TRANSITION');
-    }
+    await assertNoOpenLoan(borrowerId, loanId);
 
-    const { amount, tenureDays, interestRate, simpleInterest, totalRepayment } = calculateLoanDetails(
-      input.amount,
-      input.tenureDays
-    );
+    const terms = calculateLoanDetails(input.amount, input.tenureDays);
+    const now = new Date();
 
-    const updatedLoan = await LoanModel.findOneAndUpdate(
+    // Conditional on status DRAFT: a double-click / retried request can only submit once.
+    const updatedLoan = await Loan.findOneAndUpdate(
       { _id: loanId, borrower: borrowerId, status: LOAN_STATUS.DRAFT },
       {
         $set: {
-          amount,
-          tenureDays,
-          interestRate,
-          simpleInterest,
-          totalRepayment,
-          outstandingBalance: totalRepayment,
+          amount: terms.amount,
+          tenureDays: terms.tenureDays,
+          interestRate: terms.interestRate,
+          simpleInterest: terms.simpleInterest,
+          totalRepayment: terms.totalRepayment,
+          totalPaid: 0,
+          outstandingBalance: terms.totalRepayment,
           status: LOAN_STATUS.APPLIED,
+          appliedAt: now,
         },
+        $push: { statusHistory: historyEntry(LOAN_STATUS.APPLIED, borrowerId, undefined, now) },
       },
-      { new: true }
+      { new: true, runValidators: true }
     );
 
     if (!updatedLoan) {
-      throw new AppError('Application state modified concurrently by another process', 409, undefined, 'CONCURRENT_UPDATE');
+      throw new AppError('This application has already been submitted.', 409, undefined, 'INVALID_TRANSITION');
     }
 
     return updatedLoan;
   }
 
-  /**
-   * Get all loans for current borrower.
-   */
   static async getBorrowerLoans(borrowerId: string) {
-    return await LoanModel.find({ borrower: borrowerId }).sort({ createdAt: -1 });
+    return Loan.find({ borrower: borrowerId }).sort({ createdAt: -1 });
   }
 
   /**
-   * Get single loan by ID for current borrower.
-   * Ownership check: returns 404 if loan belongs to another borrower (avoid leaking existence).
-   * Includes payment history.
+   * A single loan owned by the borrower, with its payments. A loan owned by someone else
+   * gets the same 404 as a missing one, so its existence is not revealed.
    */
   static async getBorrowerLoanById(borrowerId: string, loanId: string) {
-    const loan = await LoanModel.findById(loanId);
-    
-    // Return 404 for non-existent OR non-owned loans to prevent resource existence leakage
-    if (!loan || loan.borrower.toString() !== borrowerId) {
-      throw new AppError('Loan application not found', 404);
-    }
+    const loan = await Loan.findOne({ _id: loanId, borrower: borrowerId });
+    if (!loan) throw new AppError('Loan application not found', 404, undefined, 'NOT_FOUND');
 
-    const payments = await PaymentModel.find({ loan: loanId }).sort({ createdAt: -1 });
-
-    return {
-      loan,
-      payments,
-    };
+    const payments = await Payment.find({ loan: loan._id }).select('-recordedBy').sort({ paymentDate: -1, createdAt: -1 });
+    return { loan, payments };
   }
 }

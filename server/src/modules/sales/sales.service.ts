@@ -1,152 +1,123 @@
 import mongoose, { PipelineStage } from 'mongoose';
 import { User, IUser } from '../../models/User.model.js';
-import { Loan } from '../../models/Loan.model.js';
 import { ROLES } from '../../constants/roles.js';
 import { LOAN_STATUS } from '../../constants/loanStatus.js';
 import { escapeRegex } from '../../utils/regex.js';
+import { startOfBusinessDay } from '../../utils/dates.js';
+import { buildPaginationMeta, PaginationInput } from '../../utils/pagination.js';
 
-export interface SalesLeadFilter {
-  page?: number;
-  limit?: number;
-  search?: string;
+/** How far a lead has got through the application wizard without submitting. */
+export const LEAD_STAGES = ['REGISTERED', 'PROFILE_SAVED', 'SLIP_UPLOADED'] as const;
+export type LeadStage = (typeof LEAD_STAGES)[number];
+
+/** Any loan in one of these means the borrower has applied at least once ⇒ no longer a lead. */
+const SUBMITTED_STATUSES = Object.values(LOAN_STATUS).filter((s) => s !== LOAN_STATUS.DRAFT);
+
+export interface Lead {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: Date;
+  stage: LeadStage;
+  lastActivityAt: Date;
+}
+
+/**
+ * Pipeline producing one row per pre-application lead: an active borrower with no
+ * submitted loan. The stage comes from their DRAFT (if any). Only contact details
+ * and progress are exposed to Sales; PAN, DOB and salary are not.
+ */
+function leadPipeline(search?: string): PipelineStage[] {
+  const match: mongoose.FilterQuery<IUser> = { role: ROLES.BORROWER, isActive: true };
+  if (search) {
+    const regex = new RegExp(escapeRegex(search), 'i');
+    match.$or = [{ name: regex }, { email: regex }];
+  }
+
+  return [
+    { $match: match },
+    {
+      $lookup: {
+        from: 'loans',
+        localField: '_id',
+        foreignField: 'borrower',
+        as: 'loans',
+        pipeline: [{ $project: { status: 1, updatedAt: 1, 'personalDetails.fullName': 1, 'salarySlip.storedName': 1 } }],
+      },
+    },
+    { $match: { 'loans.status': { $nin: SUBMITTED_STATUSES } } },
+    { $addFields: { draft: { $first: { $filter: { input: '$loans', cond: { $eq: ['$$this.status', LOAN_STATUS.DRAFT] } } } } } },
+    {
+      $project: {
+        _id: 0,
+        id: { $toString: '$_id' },
+        name: 1,
+        email: 1,
+        createdAt: 1,
+        lastActivityAt: { $ifNull: ['$draft.updatedAt', '$createdAt'] },
+        stage: {
+          $switch: {
+            branches: [
+              { case: { $ne: [{ $ifNull: ['$draft.salarySlip.storedName', null] }, null] }, then: 'SLIP_UPLOADED' },
+              { case: { $ne: [{ $ifNull: ['$draft.personalDetails.fullName', null] }, null] }, then: 'PROFILE_SAVED' },
+            ],
+            default: 'REGISTERED',
+          },
+        },
+      },
+    },
+  ];
 }
 
 export class SalesService {
-  static async getLeads(filter: SalesLeadFilter) {
-    const page = Math.max(1, Number(filter.page) || 1);
-    const limit = Math.max(1, Math.min(50, Number(filter.limit) || 10)); // Cap limit at 50
-    const skip = (page - 1) * limit;
-
-    const matchStage: mongoose.FilterQuery<IUser> = { role: ROLES.BORROWER, isActive: true };
-
-    if (filter.search && filter.search.trim() !== '') {
-      const safeSearch = escapeRegex(filter.search.trim());
-      const searchRegex = new RegExp(safeSearch, 'i');
-      matchStage.$or = [{ name: searchRegex }, { email: searchRegex }];
-    }
-
-    const pipeline: PipelineStage[] = [
-      { $match: matchStage },
-      {
-        $lookup: {
-          from: 'loans',
-          localField: '_id',
-          foreignField: 'borrower',
-          as: 'loans',
-        },
+  static async getLeads(pagination: PaginationInput, search?: string, stage?: LeadStage) {
+    const pipeline = leadPipeline(search);
+    if (stage) pipeline.push({ $match: { stage } });
+    pipeline.push({
+      $facet: {
+        leads: [{ $sort: { lastActivityAt: -1, id: -1 } }, { $skip: pagination.skip }, { $limit: pagination.limit }],
+        total: [{ $count: 'count' }],
       },
-      {
-        $project: {
-          id: '$_id',
-          name: 1,
-          email: 1,
-          createdAt: 1,
-          latestLoan: { $arrayElemAt: ['$loans', 0] },
-        },
-      },
-      { $sort: { createdAt: -1 } },
-      { $skip: skip },
-      { $limit: limit },
-    ];
-
-    const leads = await User.aggregate(pipeline);
-    const total = await User.countDocuments(matchStage);
-    const totalPages = Math.ceil(total / limit) || 1;
-
-    const formattedLeads = leads.map((lead) => {
-      let stage = 'REGISTERED';
-      let loanId = null;
-      let loanAmount = null;
-
-      if (lead.latestLoan) {
-        loanId = lead.latestLoan._id;
-        loanAmount = lead.latestLoan.amount;
-        const status = lead.latestLoan.status;
-
-        if (status === LOAN_STATUS.DRAFT) {
-          if (lead.latestLoan.salarySlip && lead.latestLoan.salarySlip.path) {
-            stage = 'SLIP_UPLOADED';
-          } else if (lead.latestLoan.personalDetails && lead.latestLoan.personalDetails.fullName) {
-            stage = 'PROFILE_SAVED';
-          } else {
-            stage = 'REGISTERED';
-          }
-        } else {
-          stage = status;
-        }
-      }
-
-      return {
-        id: lead._id.toString(),
-        name: lead.name,
-        email: lead.email,
-        createdAt: lead.createdAt,
-        stage,
-        loanId,
-        loanAmount,
-      };
     });
 
-    return {
-      leads: formattedLeads,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1,
-      },
-    };
+    const [result] = await User.aggregate<{ leads: Lead[]; total: { count: number }[] }>(pipeline);
+    const total = result?.total[0]?.count ?? 0;
+    return { leads: result?.leads ?? [], pagination: buildPaginationMeta(pagination, total) };
   }
 
   static async getStats() {
-    const totalLeads = await User.countDocuments({ role: ROLES.BORROWER, isActive: true });
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const newLeadsToday = await User.countDocuments({
-      role: ROLES.BORROWER,
-      createdAt: { $gte: today },
-    });
-
-    const registeredOnly = await User.aggregate([
-      { $match: { role: ROLES.BORROWER, isActive: true } },
-      {
-        $lookup: {
-          from: 'loans',
-          localField: '_id',
-          foreignField: 'borrower',
-          as: 'loans',
+    const [funnelRows, newLeadsToday, convertedBorrowers] = await Promise.all([
+      User.aggregate<{ _id: LeadStage; count: number }>([
+        ...leadPipeline(),
+        { $group: { _id: '$stage', count: { $sum: 1 } } },
+      ]),
+      User.countDocuments({ role: ROLES.BORROWER, isActive: true, createdAt: { $gte: startOfBusinessDay() } }),
+      User.aggregate<{ count: number }>([
+        { $match: { role: ROLES.BORROWER } },
+        {
+          $lookup: {
+            from: 'loans',
+            localField: '_id',
+            foreignField: 'borrower',
+            as: 'submitted',
+            pipeline: [{ $match: { status: { $in: SUBMITTED_STATUSES } } }, { $limit: 1 }],
+          },
         },
-      },
-      { $match: { loans: { $size: 0 } } },
-      { $count: 'count' },
+        { $match: { 'submitted.0': { $exists: true } } },
+        { $count: 'count' },
+      ]),
     ]);
 
-    const profileSaved = await Loan.countDocuments({
-      status: LOAN_STATUS.DRAFT,
-      'personalDetails.fullName': { $exists: true },
-      'salarySlip.path': { $exists: false },
+    const funnel: Record<LeadStage, number> = { REGISTERED: 0, PROFILE_SAVED: 0, SLIP_UPLOADED: 0 };
+    funnelRows.forEach((row) => {
+      funnel[row._id] = row.count;
     });
-
-    const slipUploaded = await Loan.countDocuments({
-      status: LOAN_STATUS.DRAFT,
-      'salarySlip.path': { $exists: true },
-    });
-
-    const appliedLoans = await Loan.countDocuments({ status: LOAN_STATUS.APPLIED });
 
     return {
-      totalLeads,
+      totalLeads: funnel.REGISTERED + funnel.PROFILE_SAVED + funnel.SLIP_UPLOADED,
       newLeadsToday,
-      funnel: {
-        registered: registeredOnly[0]?.count || 0,
-        profileSaved,
-        slipUploaded,
-        applied: appliedLoans,
-      },
+      convertedBorrowers: convertedBorrowers[0]?.count ?? 0,
+      funnel,
     };
   }
 }

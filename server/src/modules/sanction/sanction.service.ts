@@ -1,148 +1,54 @@
-import mongoose from 'mongoose';
-import { Loan, ILoan } from '../../models/Loan.model.js';
-import { LOAN_STATUS, isValidStatusTransition } from '../../constants/loanStatus.js';
-import { AppError } from '../../utils/AppError.js';
-import { escapeRegex } from '../../utils/regex.js';
+import { LOAN_STATUS } from '../../constants/loanStatus.js';
+import { PaginationInput } from '../../utils/pagination.js';
+import { findLoanInStatuses, listLoanQueue, sumByStatus, transitionLoan } from '../../services/loanQueue.js';
+import { startOfBusinessDay } from '../../utils/dates.js';
+import { Loan } from '../../models/Loan.model.js';
 
 export class SanctionService {
-  static async getAppliedLoans(page: number = 1, limit: number = 10, search?: string) {
-    const safeLimit = Math.max(1, Math.min(50, limit)); // Cap at 50
-    const skip = (page - 1) * safeLimit;
-    const query: mongoose.FilterQuery<ILoan> = { status: LOAN_STATUS.APPLIED };
-
-    if (search && search.trim() !== '') {
-      const safeSearch = escapeRegex(search.trim());
-      const searchRegex = new RegExp(safeSearch, 'i');
-      query.$or = [
-        { 'personalDetails.fullName': searchRegex },
-        { 'personalDetails.pan': searchRegex },
-      ];
-    }
-
-    const loans = await Loan.find(query)
-      .populate('borrower', 'name email createdAt')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(safeLimit);
-
-    const total = await Loan.countDocuments(query);
-    const totalPages = Math.ceil(total / safeLimit) || 1;
-
-    return {
-      loans,
-      pagination: {
-        page,
-        limit: safeLimit,
-        total,
-        totalPages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1,
-      },
-    };
+  static getAppliedLoans(pagination: PaginationInput, search?: string) {
+    // Oldest first: applications are reviewed in the order they arrived.
+    return listLoanQueue({ statuses: [LOAN_STATUS.APPLIED], pagination, search, sort: { appliedAt: 1 } });
   }
 
-  static async getLoanById(loanId: string) {
-    const loan = await Loan.findOne({ _id: loanId, status: LOAN_STATUS.APPLIED })
-      .populate('borrower', 'name email createdAt');
-
-    if (!loan) {
-      throw new AppError('Applied loan application not found', 404);
-    }
-
-    return loan;
+  static getLoanById(loanId: string) {
+    return findLoanInStatuses(loanId, [LOAN_STATUS.APPLIED]);
   }
 
   static async getStats() {
-    const pendingCount = await Loan.countDocuments({ status: LOAN_STATUS.APPLIED });
-    
-    const pendingLoans = await Loan.find({ status: LOAN_STATUS.APPLIED }).select('amount');
-    const totalPendingAmount = pendingLoans.reduce((sum, l) => sum + (l.amount || 0), 0);
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const sanctionedToday = await Loan.countDocuments({
-      status: LOAN_STATUS.SANCTIONED,
-      sanctionedAt: { $gte: today },
-    });
-
-    const rejectedToday = await Loan.countDocuments({
-      status: LOAN_STATUS.REJECTED,
-      updatedAt: { $gte: today },
-    });
-
+    const today = startOfBusinessDay();
+    const [pending, sanctionedToday, rejectedToday] = await Promise.all([
+      sumByStatus([LOAN_STATUS.APPLIED], 'amount'),
+      Loan.countDocuments({ sanctionedAt: { $gte: today } }),
+      Loan.countDocuments({ rejectedAt: { $gte: today } }),
+    ]);
     return {
-      pendingCount,
-      totalPendingAmount,
+      pendingCount: pending.count,
+      totalPendingAmount: pending.total,
       sanctionedToday,
       rejectedToday,
     };
   }
 
-  static async approveLoan(loanId: string, sanctionUserId: string) {
-    const existingLoan = await Loan.findById(loanId);
-    if (!existingLoan) {
-      throw new AppError('Loan application not found', 404);
-    }
-
-    if (!isValidStatusTransition(existingLoan.status, LOAN_STATUS.SANCTIONED)) {
-      throw new AppError(
-        `Invalid status transition. Cannot sanction loan from status '${existingLoan.status}'`,
-        409,
-        undefined,
-        'INVALID_TRANSITION'
-      );
-    }
-
-    const updatedLoan = await Loan.findOneAndUpdate(
-      { _id: loanId, status: LOAN_STATUS.APPLIED },
-      {
-        $set: {
-          status: LOAN_STATUS.SANCTIONED,
-          sanctionedBy: sanctionUserId,
-          sanctionedAt: new Date(),
-        },
-      },
-      { new: true }
-    ).populate('borrower', 'name email');
-
-    if (!updatedLoan) {
-      throw new AppError('Loan status was modified concurrently by another user', 409, undefined, 'CONCURRENT_UPDATE');
-    }
-
-    return updatedLoan;
+  /** APPLIED → SANCTIONED */
+  static approveLoan(loanId: string, actorId: string) {
+    return transitionLoan({
+      loanId,
+      from: LOAN_STATUS.APPLIED,
+      to: LOAN_STATUS.SANCTIONED,
+      actorId,
+      set: { sanctionedBy: actorId, sanctionedAt: new Date() },
+    });
   }
 
-  static async rejectLoan(loanId: string, rejectionReason: string) {
-    const existingLoan = await Loan.findById(loanId);
-    if (!existingLoan) {
-      throw new AppError('Loan application not found', 404);
-    }
-
-    if (!isValidStatusTransition(existingLoan.status, LOAN_STATUS.REJECTED)) {
-      throw new AppError(
-        `Invalid status transition. Cannot reject loan from status '${existingLoan.status}'`,
-        409,
-        undefined,
-        'INVALID_TRANSITION'
-      );
-    }
-
-    const updatedLoan = await Loan.findOneAndUpdate(
-      { _id: loanId, status: LOAN_STATUS.APPLIED },
-      {
-        $set: {
-          status: LOAN_STATUS.REJECTED,
-          rejectionReason,
-        },
-      },
-      { new: true }
-    ).populate('borrower', 'name email');
-
-    if (!updatedLoan) {
-      throw new AppError('Loan status was modified concurrently by another user', 409, undefined, 'CONCURRENT_UPDATE');
-    }
-
-    return updatedLoan;
+  /** APPLIED → REJECTED, with a mandatory reason recorded on the loan and in the audit trail. */
+  static rejectLoan(loanId: string, actorId: string, rejectionReason: string) {
+    return transitionLoan({
+      loanId,
+      from: LOAN_STATUS.APPLIED,
+      to: LOAN_STATUS.REJECTED,
+      actorId,
+      set: { rejectionReason, rejectedBy: actorId, rejectedAt: new Date() },
+      note: rejectionReason,
+    });
   }
 }

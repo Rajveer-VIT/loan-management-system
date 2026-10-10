@@ -13,38 +13,25 @@ export interface IPayment extends Document {
 
 const paymentSchema = new Schema<IPayment>(
   {
-    loan: {
-      type: Schema.Types.ObjectId,
-      ref: 'Loan',
-      required: true,
-      index: true,
-    },
+    loan: { type: Schema.Types.ObjectId, ref: 'Loan', required: true, index: true },
+    // The unique index is the authoritative duplicate-UTR guard: it holds even when two
+    // requests with the same UTR race past the application-level pre-check.
     utrNumber: {
       type: String,
       required: [true, 'UTR Number is required'],
       unique: true,
       uppercase: true,
       trim: true,
-      index: true,
     },
     amount: {
       type: Number,
       required: [true, 'Payment amount is required'],
-      min: [1, 'Payment amount must be greater than 0'],
+      min: [0.01, 'Payment amount must be greater than 0'],
     },
-    paymentDate: {
-      type: Date,
-      required: [true, 'Payment date is required'],
-    },
-    recordedBy: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-    },
+    paymentDate: { type: Date, required: [true, 'Payment date is required'] },
+    recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
 export const Payment = mongoose.model<IPayment>('Payment', paymentSchema);

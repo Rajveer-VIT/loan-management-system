@@ -4,9 +4,8 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { env } from './config/env.js';
-import { errorHandler } from './middleware/errorHandler.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
-// Import route modules
 import authRoutes from './modules/auth/auth.routes.js';
 import borrowerRoutes from './modules/borrower/borrower.routes.js';
 import salesRoutes from './modules/sales/sales.routes.js';
@@ -17,35 +16,32 @@ import sharedRoutes from './modules/shared/shared.routes.js';
 
 const app = express();
 
-// Security Middleware
 app.use(helmet());
 
-// CORS configuration
 app.use(
   cors({
-    origin: [env.CLIENT_URL, 'http://localhost:3000', 'http://127.0.0.1:3000'],
+    origin: env.CLIENT_ORIGINS,
     credentials: true,
   })
 );
 
-// Logging
 if (env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// Request body parsing
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '100kb' }));
 
-// Health check endpoint (Public / Unauthenticated for deploy checks)
+// Public health check for deploy probes.
 app.get('/health', (_req, res) => {
   res.status(200).json({ success: true, status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Rate limiter for Auth routes
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => env.NODE_ENV === 'test',
   message: {
     success: false,
     message: 'Too many authentication requests from this IP, please try again later.',
@@ -61,7 +57,7 @@ app.use('/api/v1/disbursement', disbursementRoutes);
 app.use('/api/v1/collection', collectionRoutes);
 app.use('/api/v1', sharedRoutes);
 
-// Central error handler
+app.use(notFoundHandler);
 app.use(errorHandler);
 
 export default app;
