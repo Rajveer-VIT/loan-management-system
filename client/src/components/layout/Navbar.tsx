@@ -24,7 +24,7 @@ export const Brand: React.FC<{ href?: string; inverted?: boolean }> = ({ href = 
     <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white" aria-hidden="true">
       <Landmark className="h-5 w-5" />
     </span>
-    <span className={`text-lg font-bold tracking-tight ${inverted ? 'text-white' : 'text-slate-900'}`}>FinFlow</span>
+    <span className={`text-lg font-bold tracking-tight ${inverted ? 'text-white' : 'text-slate-900'}`}>CreditSea</span>
   </Link>
 );
 

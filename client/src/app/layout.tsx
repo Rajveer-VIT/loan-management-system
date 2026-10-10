@@ -7,7 +7,7 @@ import { AuthProvider } from '../context/AuthContext';
 const inter = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
 
 export const metadata: Metadata = {
-  title: 'FinFlow — Loan Management System',
+  title: 'CreditSea — Loan Management System',
   description: 'Borrower loan applications with automated eligibility checks, and role-based operations for sanction, disbursement and collection.',
 };
 

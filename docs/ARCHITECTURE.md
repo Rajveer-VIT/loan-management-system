@@ -1,11 +1,11 @@
-# FinFlow LMS — System Architecture & Design Decisions
+# CreditSea LMS — System Architecture & Design Decisions
 
 > **Note (2026-10-10 remediation):** where this document differs from the code, the code, `README.md` and `docs/API.md` are authoritative. Key changes: no implicit Admin bypass in `authorize`; the user is re-loaded from the DB on every request; loans carry a `statusHistory` audit trail and `rejectedBy/rejectedAt`; payments use an atomic conditional update (see `collection.service.ts`); the Sales module lists only pre-application leads; salary slips no longer store a disk path.
 
 
 ## 1. System Overview
 
-FinFlow LMS is engineered as a secure, multi-tier monorepo architecture separating the Next.js client from the RESTful Node.js / Express backend.
+CreditSea LMS is engineered as a secure, multi-tier monorepo architecture separating the Next.js client from the RESTful Node.js / Express backend.
 
 ```mermaid
 graph TD

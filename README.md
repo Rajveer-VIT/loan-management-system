@@ -1,4 +1,4 @@
-# FinFlow LMS — Loan Management System
+# CreditSea LMS — Loan Management System
 
 A full-stack lending platform: borrowers apply for loans through a multi-step portal, and internal teams move each loan through its lifecycle on a role-guarded operations dashboard.
 
